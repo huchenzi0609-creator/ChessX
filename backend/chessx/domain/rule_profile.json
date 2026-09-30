@@ -1,0 +1,35 @@
+{
+  "profile_id": "demo-v2.1",
+  "status": "confirmed",
+  "spec_version": "2.1",
+  "selections": {
+    "R01": "pawn_orthogonal_step_diagonal_occupied_threat_diagonal_knight_two_cells_no_promotion",
+    "R02": "rest_blocks_move_and_invite_only_join_requires_anchor",
+    "R03": "serial_config_order_start_rest_snapshot_turn_lock",
+    "R04": "all_live_occupants_endpoint_once_mover_returns",
+    "R05": "advantage_priority_neither_equal_any_edge_unanimous_party",
+    "R06": "actual_displacement_pre_blocker_knight_origin_rest_zero_if_blocked",
+    "R07": "physical_arrival_anchor_next_turn_round_merge_recalculate",
+    "R08": "shared_conversation_engine_fifty_messages",
+    "R09": "ordinary_one_per_member_per_turn_merge_preserves_budget_move_leaves",
+    "R10": "complete_nonempty_winner_loser_partition_no_neutral_surrender_loses",
+    "R11": "any_winner_execute_all_winners_release_terminal_all_winners",
+    "R12": "initial_knowledge_persona_default_unknown_no_eavesdrop_private_narrator_no_bard_feedback",
+    "R13": "standalone_object_actions_recipient_accept_or_reject",
+    "R14": "readonly_initial_persona_versioned_goals_five_turn_reflection",
+    "R15": "exposed_cot_required_private_trace_validate_then_display_event_referenced_bard",
+    "R16": "local_fastapi_react_sqlite_one_active_world"
+  },
+  "engineering_parameters": {
+    "battle_max_rounds": 4,
+    "merge_round_counter": "reset_zero_use_configured_max_rounds",
+    "conversation_max_messages": 50,
+    "speech_max_tokens": 100,
+    "exposed_cot_max_tokens": 1000,
+    "ordinary_idle_world_turns": 2,
+    "negotiation_idle_permission_cycles": 2,
+    "reflection_interval_turns": 5,
+    "transfer_response_policy": "one_valid_accept_or_reject_no_main_action_cost",
+    "model_max_attempts_per_slot": 3
+  }
+}

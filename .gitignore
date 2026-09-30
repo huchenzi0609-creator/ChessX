@@ -1,0 +1,34 @@
+# Local credentials: never tracked. Only the empty example is allowed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*credentials*.json
+# Private runtime state, model inputs and reasoning traces
+/data/
+/exports/
+/logs/
+/local-scenarios/
+*.sqlite
+*.sqlite3
+*.db
+*.db-wal
+*.db-shm
+# Tool caches
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+frontend/node_modules/
+frontend/dist/
+frontend/coverage/
+frontend/test-results/
+frontend/playwright-report/
+.DS_Store
+.cache/
+*.tsbuildinfo

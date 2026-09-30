@@ -1,0 +1,11 @@
+{
+ "schema_version":"2.1","scenario_id":"strangers","title":"四个陌生人",
+ "board":{"rows":8,"cols":8},"rule_profile":"demo-v2.1",
+ "pieces":[
+  {"id":"archivist","name":"档案员","type":"bishop","color":"墨","position":{"row":2,"col":2},"private_text":"# 档案员\n谨慎、执着于见证。目标：找人说清自己的记忆；隐藏目标：不让任何人替我解释往事。初始不知道其他人物。"},
+  {"id":"traveler","name":"旅人","type":"knight","color":"朱","position":{"row":3,"col":3},"private_text":"# 旅人\n喜欢跨过界线，不愿欠人情。目标：接触陌生人；隐藏目标：离开之前有人记住我的名字。初始不知道其他人物。"},
+  {"id":"witness","name":"见证者","type":"king","color":"白","position":{"row":4,"col":2},"private_text":"# 见证者\n珍惜旧物，相信话语需要行动证明。目标：理解棋盘上的物件；隐藏目标：找到一位可以信任的同伴。初始不知道其他人物。"},
+  {"id":"dissenter","name":"异议者","type":"queen","color":"青","position":{"row":4,"col":4},"private_text":"# 异议者\n不认同物件所象征的身份，愿意直接追问。目标：向别人说明我的看法；隐藏目标：对既有约定提出质疑。初始不知道其他人物。"}
+ ],
+ "objects":[{"id":"letter","name":"未署名的信","description":"一张没有署名的纸，字迹已褪色。","location":{"kind":"ground","position":{"row":3,"col":3}}}]
+}

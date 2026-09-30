@@ -1,0 +1,10 @@
+{
+  "schema_version":"2.1","scenario_id":"the-seal","title":"印信与承诺",
+  "board":{"rows":8,"cols":8},"rule_profile":"demo-v2.1",
+  "pieces":[
+    {"id":"keeper","name":"守桥人","type":"rook","color":"青","position":{"row":3,"col":1},"private_text":"# 守桥人\n## 性格与价值观\n重视承诺，对权威抱有怀疑。\n## 公开目标\n向来往者问清去处。\n## 隐藏目标\n找到撤走同伴的人。\n## 初始已知人物\n曾被信使救过，记得信使的名字，但不知道他现在在哪里。"},
+    {"id":"messenger","name":"信使","type":"pawn","color":"白","position":{"row":3,"col":2},"private_text":"# 信使\n## 性格\n谨慎但珍惜情谊，觉得物件不能证明忠诚。\n## 公开目标\n把印信送给愿意听旧事的人。\n## 隐藏目标\n不让自己的旧承诺害死别人。\n## 初始已知人物\n记得守桥人拒绝过命令，不知道他目前的打算。"}
+  ],
+  "objects":[{"id":"seal","name":"旧印信","description":"边缘磨损的铜质印信。","location":{"kind":"ground","position":{"row":3,"col":2}}}],
+  "limits":{"battle_max_rounds":4,"conversation_max_messages":50}
+}
