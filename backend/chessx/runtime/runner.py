@@ -230,7 +230,19 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 state.get("error", {}).get("code") if state.get("error") else None,
             )
         except asyncio.CancelledError:
+            state = self.store.get(wid)
+            if state["lifecycle"] == "RUNNING":
+                seq, generation = state["seq"], state["generation"]
+                state["generation"] += 1
+                state["lifecycle"] = "PAUSED"
+                self.store.commit(
+                    state,
+                    [{"type": "SegmentPaused", "payload": {"reason": "cancelled"}, "audience": []}],
+                    expected_seq=seq,
+                    expected_generation=generation,
+                )
             self.store.finish_command(wid, cid, "interrupted")
+            raise
         except Exception:
             # Never include arbitrary exception text: it can contain HTTP credentials.
             self.store.finish_command(wid, cid, "failed", "INTERNAL_ERROR")

@@ -1,5 +1,6 @@
 """One-attempt OpenAI-compatible adapter. The runner owns bounded retries."""
 
+import asyncio
 import json
 import time
 from copy import deepcopy
@@ -180,15 +181,18 @@ class ProviderAdapter:
             body["response_format"] = {"type": "json_object"}
         started = time.monotonic()
         try:
-            async with httpx.AsyncClient(
-                timeout=self.timeout, transport=self._transport, follow_redirects=False
-            ) as client:
-                response = await client.post(
-                    f"{self.base_url}/chat/completions",
-                    json=body,
-                    headers={"Authorization": f"Bearer {self._api_key.get_secret_value()}"},
-                )
-        except httpx.TimeoutException:
+            # Read timeouts reset on incoming bytes; whitespace keepalives must not
+            # extend the total lifetime of a paid request indefinitely.
+            async with asyncio.timeout(self.timeout):
+                async with httpx.AsyncClient(
+                    timeout=self.timeout, transport=self._transport, follow_redirects=False
+                ) as client:
+                    response = await client.post(
+                        f"{self.base_url}/chat/completions",
+                        json=body,
+                        headers={"Authorization": f"Bearer {self._api_key.get_secret_value()}"},
+                    )
+        except (TimeoutError, httpx.TimeoutException):
             raise ModelError("MODEL_TIMEOUT", "Provider request timed out.") from None
         except httpx.HTTPError:
             raise ModelError(

@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import httpx
@@ -72,6 +73,35 @@ async def test_probe_and_strict_separation(message):
 async def test_model_must_pass_probe():
     with pytest.raises(ModelError, match="capability probing"):
         await adapter({"content": "{}", "reasoning": "trace"}).generate("test", {}, {})
+
+
+async def test_total_timeout_closes_response_despite_keepalive_bytes():
+    closed = asyncio.Event()
+
+    class KeepaliveStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                yield b"\n"
+                await asyncio.sleep(0.005)
+
+        async def aclose(self):
+            closed.set()
+
+    live = ProviderAdapter(
+        "https://provider.invalid/v1",
+        "SYNTHETIC_TIMEOUT_KEY",
+        "any-model",
+        timeout=0.05,
+        tokenizer_agreement=True,
+        transport=httpx.MockTransport(
+            lambda request: httpx.Response(200, stream=KeepaliveStream())
+        ),
+    )
+    with pytest.raises(ModelError) as error:
+        await asyncio.wait_for(live.probe(), 1)
+    assert error.value.code == "MODEL_TIMEOUT"
+    assert closed.is_set()
+    assert getattr(live, "last_probe_result", None) is None
 
 
 def test_tokenizer_must_be_verified():

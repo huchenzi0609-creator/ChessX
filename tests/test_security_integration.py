@@ -260,6 +260,40 @@ async def test_pause_invalidates_late_response_and_preserves_operation_cursor(tm
     store.close()
 
 
+async def test_direct_task_cancellation_durably_pauses_world(tmp_path):
+    store = Store(tmp_path / "task-cancel.sqlite3")
+    state = bare_world()
+    state.update(phase="PRIMARY", turn=1, cursor={"actor_index": 0, "work": None})
+    store.create(state)
+    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    entered = asyncio.Event()
+
+    class SlowAdapter(FixtureAdapter):
+        async def generate(self, stage, context, schema, *, max_output_tokens=512):
+            entered.set()
+            await asyncio.Event().wait()
+
+    wid = state["world_id"]
+    runner.adapters[wid] = SlowAdapter()
+    await runner.start(wid, {"command_id": "cancel", "kind": "run", "turns": 1})
+    await asyncio.wait_for(entered.wait(), 2)
+    runner.tasks[wid].cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await runner.tasks[wid]
+    current = store.get(wid)
+    assert current["lifecycle"] == "PAUSED"
+    assert current["generation"] == 1
+    assert current["cursor"] == {"actor_index": 0, "work": None}
+    assert (
+        store.command(wid, "cancel", {"command_id": "cancel", "kind": "run", "turns": 1})["status"]
+        == "interrupted"
+    )
+    assert store.db.execute("SELECT status FROM operations").fetchone()["status"] == "obsolete"
+    assert not any(event["type"] == "ActionChosen" for event in store.events(wid)["events"])
+    await runner.close()
+    store.close()
+
+
 def test_restart_recovers_pending_cursor_without_regeneration_and_replay_matches(tmp_path):
     path = tmp_path / "recovery.sqlite3"
     store = Store(path)

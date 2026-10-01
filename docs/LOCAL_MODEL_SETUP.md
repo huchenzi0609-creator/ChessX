@@ -30,6 +30,7 @@ CHESSX_TOKENIZER_AGREEMENT=false
 - MODEL_NOT_CONFIGURED：本地key／base URL／model缺项。
 - TOKENIZER_UNAVAILABLE：尚未核实编码；不要为跳过检查盲目设置true。
 - MODEL_COT_UNSUPPORTED／MODEL_COT_MISSING：所用服务配置未返回可识别推理文本。
+- MODEL_TIMEOUT：请求在配置总时限内未完成；保活字节不会延长总时限，不视为能力探测成功。
 - COT_BUDGET_EXCEEDED／SPEECH_BUDGET_EXCEEDED：响应超规格上限，未生效。
 - PAUSED_BUDGET：预算用尽，保存当前cursor；增加预算后明确续跑。
 
@@ -65,4 +66,11 @@ CHESSX_TOKENIZER_AGREEMENT=true
 
 真实短局脚本 `scripts/live_smoke.py` 固定2角色、1回合、最多10调用（包含探测／重试）；
 汇总只输出计数、token及错误代码，详细prompt与CoT保存在被忽略的本地data数据库。
-必须先授权将内置虚构角色资料发送至配置的模型服务，再执行此脚本。
+2026-10-02用户已明确授权试验所需的角色资料、记忆、局部观测与对话发送至配置的DeepSeek API；先前外发限制已解除。
+该授权不包含向模型正文、界面或Git发送密钥，也不包含上传至其他服务。能力校验、输入预算和密钥守卫继续有效。
+
+网页中选择预设组→“真实模型实验”→创建世界→设定小额调用预算→运行1回合。
+创建世界不消耗模型调用；首次运行会先做公开CoT能力探测。已有工程fixture世界不能直接变成真实模式，需要新建世界。
+命令行也可使用 `uv run python scripts/live_smoke.py --max-calls 3` 缩小请求上限。
+
+本次鉴权及模型列表检查通过，两次生成探测未完成，已停止追加付费请求；具体结果见 `VALIDATION.md`。

@@ -5,6 +5,7 @@ Requires authorization to send the built-in fictional scenario to the configured
 provider. Credentials are loaded only inside the process, never argv or stdout.
 """
 
+import argparse
 import asyncio
 import json
 from uuid import uuid4
@@ -16,7 +17,7 @@ from chessx.storage import Store
 from chessx.storage.store import digest
 
 
-async def main():
+async def main(max_calls: int = 10):
     settings = Settings.load()
     store = Store(settings.data_dir / "live-validation.sqlite3")
     scenario, personas = load_scenario(ROOT / "scenarios/the-seal.json")
@@ -51,7 +52,11 @@ async def main():
                 "command_id": "bounded-live-smoke",
                 "kind": "run",
                 "turns": 1,
-                "budget": {"max_calls": 10, "max_total_tokens": 40000, "max_wall_seconds": 180},
+                "budget": {
+                    "max_calls": max_calls,
+                    "max_total_tokens": 40000,
+                    "max_wall_seconds": 180,
+                },
             },
         )
         await asyncio.wait_for(runner.tasks[wid], 200)
@@ -84,4 +89,6 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--max-calls", type=int, choices=range(1, 11), default=10)
+    asyncio.run(main(parser.parse_args().max_calls))

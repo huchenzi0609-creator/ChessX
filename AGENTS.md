@@ -20,6 +20,14 @@ Server/secret-guard code may compare keys entirely in memory. Agents must not in
 .data/logs/exports are local and ignored. Public errors must contain codes, not upstream responses.
 Do not add remotes, push, or create GitHub resources without explicit authorization.
 
+## Authorized model experiments (2026-10-02)
+The human user explicitly authorized sending experiment character designs, private role memories,
+local observations, dialogue and necessary stage context to the configured DeepSeek API.
+The earlier hold on that scenario-data transfer is lifted; do not ask again for ordinary authorized tests.
+This does not authorize API keys in model prompts, source control or UI, uploads to other services,
+or GitHub publishing. Keep capability/privacy/schema checks and budgets. Use low reasoning effort,
+small runs first, and print only aggregate usage/error codes; raw prompts and CoT stay local and ignored.
+
 ## Quality gates
 Use uv run pytest, uv run ruff check ., uv run ruff format --check .,
 and pnpm --dir frontend check/build/test. Run scripts/check_secrets.py before committing.
