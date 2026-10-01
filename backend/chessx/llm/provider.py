@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import math
 import time
 from copy import deepcopy
 from typing import Literal
@@ -71,7 +72,7 @@ class ProviderAdapter:
         api_key: SecretStr | str,
         model: str,
         tokenizer_name: str = "cl100k_base",
-        timeout: float = 45,
+        timeout: float = 120,
         *,
         response_format: Literal["json_schema", "json_object", "text"] = "json_schema",
         tokenizer_agreement: bool = False,
@@ -108,6 +109,10 @@ class ProviderAdapter:
                 "Live mode requires an explicitly verified provider/tokenizer agreement.",
             )
         self.base_url = base_url.rstrip("/")
+        if not math.isfinite(timeout) or timeout <= 0 or timeout > 600:
+            raise ModelError(
+                "MODEL_CONFIG_INVALID", "Request timeout must be within (0, 600] seconds."
+            )
         self._api_key = api_key if isinstance(api_key, SecretStr) else SecretStr(api_key)
         self.model = model
         self.timeout = timeout
@@ -129,7 +134,10 @@ class ProviderAdapter:
         }
         result = await self._generate(
             "capability_probe",
-            {"instruction": "Confirm readiness. This contains no role secrets."},
+            {
+                "instruction": 'Think briefly, then return exactly this JSON: {"ready":true}. '
+                "This contains no role secrets."
+            },
             schema,
             128,
             probe=True,
@@ -167,7 +175,7 @@ class ProviderAdapter:
         body: dict = {
             "model": self.model,
             "messages": messages,
-            "max_tokens": maximum + 1000,
+            "max_tokens": min(maximum + 1000, 384) if probe else maximum + 1000,
             "stream": False,
         }
         if self.provider_profile == "deepseek":
@@ -185,7 +193,9 @@ class ProviderAdapter:
             # extend the total lifetime of a paid request indefinitely.
             async with asyncio.timeout(self.timeout):
                 async with httpx.AsyncClient(
-                    timeout=self.timeout, transport=self._transport, follow_redirects=False
+                    timeout=httpx.Timeout(self.timeout, connect=min(10, self.timeout)),
+                    transport=self._transport,
+                    follow_redirects=False,
                 ) as client:
                     response = await client.post(
                         f"{self.base_url}/chat/completions",
@@ -202,6 +212,9 @@ class ProviderAdapter:
             code = {
                 401: "MODEL_AUTH_FAILED",
                 403: "MODEL_AUTH_FAILED",
+                402: "MODEL_BALANCE_INSUFFICIENT",
+                400: "MODEL_REQUEST_INVALID",
+                422: "MODEL_REQUEST_INVALID",
                 429: "MODEL_RATE_LIMITED",
             }.get(response.status_code, "MODEL_HTTP_ERROR")
             raise ModelError(code, f"Provider returned HTTP {response.status_code}.")

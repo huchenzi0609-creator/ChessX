@@ -16,7 +16,7 @@ class Settings(BaseModel):
     response_format: str = "json_schema"
     tokenizer_name: str = "cl100k_base"
     tokenizer_agreement: bool = False
-    timeout_seconds: float = 45
+    timeout_seconds: float = Field(default=120, gt=0, le=600)
     context_capacity: int = Field(default=16384, ge=4096)
     character_input_limit: int = Field(default=8192, ge=1024)
     data_dir: Path = ROOT / "data"
@@ -46,7 +46,7 @@ class Settings(BaseModel):
             response_format=get("RESPONSE_FORMAT", "json_schema"),
             tokenizer_name=get("TOKENIZER_NAME", "cl100k_base"),
             tokenizer_agreement=get("TOKENIZER_AGREEMENT", "false").lower() == "true",
-            timeout_seconds=float(get("TIMEOUT_SECONDS", "45")),
+            timeout_seconds=float(get("TIMEOUT_SECONDS", "120")),
             context_capacity=int(get("CONTEXT_CAPACITY", "16384")),
             character_input_limit=int(get("CHARACTER_INPUT_LIMIT", "8192")),
             data_dir=data,

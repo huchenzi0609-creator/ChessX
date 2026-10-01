@@ -8,6 +8,7 @@ import asyncio
 import copy
 import json
 import time
+from functools import partial
 from uuid import uuid4
 
 from pydantic import TypeAdapter, ValidationError
@@ -265,6 +266,19 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 expected_generation=state["generation"],
             )
 
+    async def _within_wall_budget(self, state, request):
+        started = getattr(self, "_started_at", time.monotonic())
+        remaining = state.get("budget", {}).get("max_wall_seconds", 1800) - (
+            time.monotonic() - started
+        )
+        if remaining <= 0:
+            raise BudgetError()
+        try:
+            async with asyncio.timeout(remaining):
+                return await request()
+        except TimeoutError:
+            raise BudgetError() from None
+
     async def ask(self, state, pid, stage, slot, schema, protocol, validator=None, context=None):
         wid = state["world_id"]
         context = context or build_context(state, pid, stage, protocol)
@@ -325,11 +339,9 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             attempt = self.store.prepare(wid, slot, state["generation"], context)
             state["usage"]["calls"] = self.store.call_count(wid)
             try:
-                result = await adapter.generate(
-                    stage,
-                    context,
-                    schema,
-                    max_output_tokens=maximum,
+                result = await self._within_wall_budget(
+                    state,
+                    partial(adapter.generate, stage, context, schema, max_output_tokens=maximum),
                 )
                 current = self.store.get(wid)
                 if current["generation"] != state["generation"] or current["seq"] != state["seq"]:
@@ -357,6 +369,9 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 raise
             except ConflictError:
                 raise
+            except BudgetError:
+                self.store.fail_operation(wid, slot, attempt, BudgetError.code)
+                raise
             except (ModelError, RuleError, ValidationError) as error:
                 code = getattr(error, "code", "SCHEMA_INVALID")
                 self.store.fail_operation(wid, slot, attempt, code)
@@ -369,6 +384,11 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                     "MODEL_COT_UNSUPPORTED",
                     "TOKENIZER_UNAVAILABLE",
                     "MODEL_COT_MISSING",
+                    "MODEL_TIMEOUT",
+                    "MODEL_TRANSPORT_ERROR",
+                    "MODEL_RATE_LIMITED",
+                    "MODEL_BALANCE_INSUFFICIENT",
+                    "MODEL_REQUEST_INVALID",
                 }:
                     raise
                 await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
@@ -389,7 +409,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             {"stage": "capability_probe", "instruction": "Verify readiness without role secrets."},
         )
         try:
-            capabilities = await adapter.probe()
+            capabilities = await self._within_wall_budget(state, adapter.probe)
             current = self.store.get(wid)
             if current["generation"] != state["generation"] or current["seq"] != state["seq"]:
                 self.store.fail_operation(wid, slot, attempt, "STALE_GENERATION", True)
@@ -415,6 +435,9 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             raise
         except ModelError as error:
             self.store.fail_operation(wid, slot, attempt, error.code)
+            raise
+        except BudgetError:
+            self.store.fail_operation(wid, slot, attempt, BudgetError.code)
             raise
 
     async def step(self, wid):
@@ -443,7 +466,12 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             current["usage"]["calls"] = self.store.call_count(wid)
             current["error"] = {
                 "code": getattr(error, "code", "SCHEMA_INVALID"),
-                "message": "The current operation could not complete. Check configuration or retry this preserved cursor.",
+                "message": (
+                    f"模型请求超过{self.settings.timeout_seconds:g}秒总时限。已暂停并保留进度；"
+                    "这不是模型加载失败，也不一定是密钥错误。请稍后点击重试，避免连续重复请求。"
+                    if isinstance(error, ModelError) and error.code == "MODEL_TIMEOUT"
+                    else "The current operation could not complete. Check configuration or retry this preserved cursor."
+                ),
             }
             return self.store.commit(
                 current,

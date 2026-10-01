@@ -152,6 +152,8 @@ async def test_explicit_deepseek_profile_requests_low_thinking_and_json_mode():
     assert body["thinking"] == {"type": "enabled"}
     assert body["reasoning_effort"] == "low"
     assert body["response_format"] == {"type": "json_object"}
+    assert body["max_tokens"] == 384
+    assert '{\\"ready\\":true}' in body["messages"][-1]["content"]
     assert "SYNTHETIC_DEEPSEEK_KEY" not in requests[0].content.decode()
     assert not any(key in body for key in ["temperature", "frequency_penalty", "presence_penalty"])
 

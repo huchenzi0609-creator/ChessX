@@ -17,6 +17,7 @@ CHESSX_TOKENIZER_AGREEMENT=false
 - `CHESSX_RESPONSE_FORMAT` 按服务实际能力选择 `json_schema`、`json_object` 或 `text`。无严格schema的服务仍经相同业务校验；没有CoT则直接报错，不能降级。
 - `CHESSX_TOKENIZER_NAME` 指与该配置实际匹配的tiktoken编码名称。默认cl100k_base只用于工程fixture，**不能假定它对应任意模型**。核实服务／模型使用该编码后才将 `CHESSX_TOKENIZER_AGREEMENT=true`；当前支持显式tiktoken编码和下文DeepSeek官方V4 JSON；其他模型不匹配时禁止真实运行，不猜测计数。
 - `CHESSX_CONTEXT_CAPACITY` 对应提供方文档中的总上下文容量，默认16384。请求先校验阶段上限及正式输出／公开CoT预留，超限时在调用前暂停。
+- `CHESSX_TIMEOUT_SECONDS` 为一次生成请求的完整总时限，默认120秒，可设为大于0且不超过600秒；连接时限最多10秒，保活字节不延长总时限。运行段的墙钟预算可更早中断请求。
 - 修改文件后重启后端，不把配置写进Vite `VITE_*`变量。浏览器只收到是否配置完成的布尔值。
 
 真实模式首次明确启动run时，在本段调用预算内做一个无角色秘密的公开CoT能力探测；创建世界本身不调用API。每个世界回合会有行动、协议、记忆和叙事请求；不要先跑长局。建议先2人、1回合、最大9个正式操作，加首次探测最多10个请求。工程fixture不调用任何外部模型；它是测试替身，不是AI涌现结果。
@@ -33,6 +34,8 @@ CHESSX_TOKENIZER_AGREEMENT=false
 - MODEL_TIMEOUT：请求在配置总时限内未完成；保活字节不会延长总时限，不视为能力探测成功。
 - COT_BUDGET_EXCEEDED／SPEECH_BUDGET_EXCEEDED：响应超规格上限，未生效。
 - PAUSED_BUDGET：预算用尽，保存当前cursor；增加预算后明确续跑。
+- MODEL_BALANCE_INSUFFICIENT／MODEL_RATE_LIMITED：余额不足／限流；暂停，不自动连续重复请求。
+- MODEL_REQUEST_INVALID：HTTP 400／422，检查服务参数兼容性；不自动重复同一请求。
 
 不要粘贴完整上游日志排错，只报告错误代码。密钥疑似进入任何公开位置时在服务端撤销重发，不把原密钥再发送给协作者。
 
@@ -73,4 +76,15 @@ CHESSX_TOKENIZER_AGREEMENT=true
 创建世界不消耗模型调用；首次运行会先做公开CoT能力探测。已有工程fixture世界不能直接变成真实模式，需要新建世界。
 命令行也可使用 `uv run python scripts/live_smoke.py --max-calls 3` 缩小请求上限。
 
-本次鉴权及模型列表检查通过，两次生成探测未完成，已停止追加付费请求；具体结果见 `VALIDATION.md`。
+后续复测已通过公开推理／JSON能力与两角色1回合真实运行。此前两次超时当前未复现；具体实测范围见 `VALIDATION.md`。
+
+低成本命令行排查：
+
+```sh
+# 不生成文本：检查鉴权、模型是否在列表内。
+uv run python scripts/check_model.py
+# 显式发一次生成请求，最多384输出token；验证公开推理与严格JSON。
+uv run python scripts/check_model.py --probe
+```
+
+诊断结果中的 `generation_checked=false` 不能证明生成能力。超时、网络失败及限流暂停后可在原世界点击“重试”，无需重置人物或删除存档。

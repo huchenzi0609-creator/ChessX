@@ -294,6 +294,67 @@ async def test_direct_task_cancellation_durably_pauses_world(tmp_path):
     store.close()
 
 
+@pytest.mark.parametrize(
+    "failure", ["MODEL_TIMEOUT", "MODEL_RATE_LIMITED", "MODEL_BALANCE_INSUFFICIENT"]
+)
+async def test_transport_failures_do_not_automatically_repeat_paid_requests(tmp_path, failure):
+    store = Store(tmp_path / "fail-fast.sqlite3")
+    state = bare_world()
+    state.update(phase="PRIMARY", turn=1, cursor={"actor_index": 0, "work": None})
+    store.create(state)
+    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+
+    class FailedAdapter(FixtureAdapter):
+        async def generate(self, *args, **kwargs):
+            raise ModelError(failure, "Synthetic failure")
+
+    wid = state["world_id"]
+    runner.adapters[wid] = FailedAdapter()
+    await runner.start(wid, {"command_id": "fail", "kind": "run", "turns": 1})
+    await runner.tasks[wid]
+    current = store.get(wid)
+    assert current["lifecycle"] == "PAUSED_ERROR"
+    assert current["error"]["code"] == failure
+    assert store.call_count(wid) == 1
+    assert current["cursor"]["actor_index"] == 0
+    await runner.close()
+    store.close()
+
+
+async def test_wall_budget_interrupts_inflight_model_call(tmp_path):
+    store = Store(tmp_path / "wall-budget.sqlite3")
+    state = bare_world()
+    state.update(phase="PRIMARY", turn=1, cursor={"actor_index": 0, "work": None})
+    store.create(state)
+    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    interrupted = asyncio.Event()
+
+    class SlowAdapter(FixtureAdapter):
+        async def generate(self, *args, **kwargs):
+            try:
+                await asyncio.Event().wait()
+            finally:
+                interrupted.set()
+
+    wid = state["world_id"]
+    runner.adapters[wid] = SlowAdapter()
+    await runner.start(
+        wid, {"command_id": "wall", "kind": "run", "turns": 1, "budget": {"max_wall_seconds": 0.05}}
+    )
+    await asyncio.wait_for(runner.tasks[wid], 1)
+    current = store.get(wid)
+    assert interrupted.is_set()
+    assert current["lifecycle"] == "PAUSED_BUDGET"
+    assert current["error"]["code"] == "RUN_BUDGET_EXCEEDED"
+    assert store.call_count(wid) == 1
+    assert current["cursor"]["actor_index"] == 0
+    assert (
+        store.db.execute("SELECT error_code FROM operations").fetchone()[0] == "RUN_BUDGET_EXCEEDED"
+    )
+    await runner.close()
+    store.close()
+
+
 def test_restart_recovers_pending_cursor_without_regeneration_and_replay_matches(tmp_path):
     path = tmp_path / "recovery.sqlite3"
     store = Store(path)

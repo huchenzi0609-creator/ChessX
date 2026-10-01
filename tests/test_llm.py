@@ -75,6 +75,15 @@ async def test_model_must_pass_probe():
         await adapter({"content": "{}", "reasoning": "trace"}).generate("test", {}, {})
 
 
+@pytest.mark.parametrize("timeout", [0, -1, float("inf"), float("nan"), 601])
+def test_invalid_deadlines_are_rejected(timeout):
+    with pytest.raises(ModelError) as error:
+        ProviderAdapter(
+            "https://provider.invalid/v1", "key", "model", timeout=timeout, tokenizer_agreement=True
+        )
+    assert error.value.code == "MODEL_CONFIG_INVALID"
+
+
 async def test_total_timeout_closes_response_despite_keepalive_bytes():
     closed = asyncio.Event()
 
