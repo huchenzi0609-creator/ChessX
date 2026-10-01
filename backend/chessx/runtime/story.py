@@ -20,7 +20,9 @@ class StoryMixin:
             context,
             schemas.BARD,
             self.adapter(state).counter,
-            max_output_tokens=2048,
+            # Reserve room for an unconstrained manuscript; actual output gets
+            # the remaining model capacity rather than a fixed 2048-token cap.
+            max_output_tokens=self.settings.context_capacity // 3,
             model_capacity=self.settings.context_capacity,
         )
 

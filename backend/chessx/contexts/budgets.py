@@ -70,6 +70,15 @@ def fit_context(
         if isinstance(receipts, list) and len(receipts) > 1:
             receipts.pop(0)
             continue
+        recall = fitted.get("dialogue_recall", {})
+        heard = recall.get("recent_heard") if isinstance(recall, dict) else None
+        if isinstance(heard, list) and len(heard) > 1:
+            heard.pop(0)
+            continue
+        own_utterances = recall.get("last_own_utterances") if isinstance(recall, dict) else None
+        if isinstance(own_utterances, list) and len(own_utterances) > 1:
+            own_utterances.pop(0)
+            continue
         protocol = fitted.get("protocol", {})
         messages = protocol.get("messages") if isinstance(protocol, dict) else None
         current_state_present = bool(fitted.get("observation")) or (

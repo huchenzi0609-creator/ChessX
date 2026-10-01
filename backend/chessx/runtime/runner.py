@@ -19,7 +19,8 @@ from chessx.domain.errors import RuleError
 from chessx.domain.models import Intent
 from chessx.domain.profile import RULE_MANIFEST_HASH, frozen_rule_manifest
 from chessx.llm import FixtureAdapter, ModelError, ProviderAdapter
-from chessx.llm.provider import STAGE_OUTPUT_LIMITS
+from chessx.llm.provider import CHARACTER_BEHAVIOR_VERSION, STAGE_OUTPUT_LIMITS, prompt_manifest
+from chessx.llm.speech import validate_character_speech
 from chessx.rules.actions import apply_primary, create_transfer_offer, resolve_transfer
 from chessx.rules.geometry import begin_turn, legal_move, rest_at_start, visible_positions
 from chessx.runtime import schemas
@@ -27,7 +28,7 @@ from chessx.runtime.combat import CombatMixin
 from chessx.runtime.dialogue import DialogueMixin
 from chessx.runtime.movement import MovementMixin
 from chessx.runtime.story import StoryMixin
-from chessx.storage.store import ConflictError, Store, canonical
+from chessx.storage.store import ConflictError, Store, canonical, digest
 
 INTENTS = TypeAdapter(Intent)
 
@@ -44,6 +45,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
         self.tasks: dict[str, asyncio.Task] = {}
         self._operation = None
         self._live_adapter = None
+        self.prompt_manifest_hash = digest(prompt_manifest())
 
     def adapter(self, state):
         wid = state["world_id"]
@@ -292,7 +294,12 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 "Credentials cannot enter model context or operation records.",
             )
         adapter = self.adapter(state)
-        maximum = STAGE_OUTPUT_LIMITS.get(stage, 512)
+        output_reserve = (
+            self.settings.context_capacity // 3
+            if stage == "bard"
+            else STAGE_OUTPUT_LIMITS.get(stage, 512)
+        )
+        maximum = output_reserve
         context = fit_context(
             stage,
             context,
@@ -315,11 +322,23 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 context,
                 schema,
                 adapter.counter,
-                max_output_tokens=maximum,
+                max_output_tokens=output_reserve,
                 model_capacity=self.settings.context_capacity,
                 input_limit=self.settings.character_input_limit if pid is not None else None,
             )
             estimated = request_input_tokens(stage, context, schema, adapter.counter, maximum)
+            if stage == "bard":
+                # A story has no manuscript-length cap. Allocate all remaining
+                # model/budget headroom, retaining the separate reasoning reserve.
+                maximum = min(
+                    self.settings.context_capacity - estimated - 1000,
+                    state.get("budget", {}).get("max_total_tokens", 2_000_000)
+                    - (total - state.get("budget_base_tokens", 0))
+                    - estimated
+                    - 1000,
+                )
+                if maximum < 128:
+                    raise BudgetError()
             if (
                 calls - state.get("budget_base_calls", 0)
                 >= state.get("budget", {}).get("max_calls", 1000)
@@ -342,6 +361,8 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                     raise ConflictError()
                 if validator:
                     validator(result.content)
+                if pid is not None:
+                    validate_character_speech(result.content, context, stage)
                 for key in ("input_tokens", "output_tokens", "reasoning_tokens"):
                     state["usage"][key] += getattr(result, key)
                 self._operation = (
@@ -354,6 +375,9 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                         "output_tokens": result.output_tokens,
                         "reasoning_tokens": result.reasoning_tokens,
                         "latency_ms": result.latency_ms,
+                        "prompt_manifest_hash": self.prompt_manifest_hash,
+                        "character_behavior_version": CHARACTER_BEHAVIOR_VERSION,
+                        "requested_max_tokens": maximum + 1000,
                     },
                 )
                 return result.content
@@ -376,6 +400,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                     "instruction": "Correct the indicated failure and return one complete JSON object with ONLY the supplied schema fields. Shorten text to fit the ENTIRE formal output budget; keep exposed reasoning well below 1000 tokens. Do not change world facts or use a fallback action.",
                 }
                 if code in {
+                    # Transport/capability failures pause rather than spending on retries.
                     "MODEL_AUTH_FAILED",
                     "MODEL_COT_UNSUPPORTED",
                     "TOKENIZER_UNAVAILABLE",
@@ -387,6 +412,12 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                     "MODEL_REQUEST_INVALID",
                 }:
                     raise
+                repairs = {
+                    "SPEECH_INTERNAL_REFERENCE": "Rewrite the intended utterance in natural spoken language without source IDs, citation numbers, footnotes or technical labels. Do not reproduce the offending marker.",
+                    "SPEECH_REPETITIVE": "Do not repeat the previous long utterance or paraphrase it again. Respond briefly to a new point; if there is nothing new, choose pass or leave when permitted by this stage.",
+                }
+                if code in repairs:
+                    context["protocol"]["validation_feedback"]["instruction"] = repairs[code]
                 await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
         raise ModelError(
             code,
@@ -422,6 +453,8 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 "input_tokens": result.input_tokens,
                 "output_tokens": result.output_tokens,
                 "reasoning_tokens": result.reasoning_tokens,
+                "prompt_manifest_hash": self.prompt_manifest_hash,
+                "requested_max_tokens": 384,
             }
             for key in ("input_tokens", "output_tokens", "reasoning_tokens"):
                 state["usage"][key] += getattr(result, key)
@@ -624,7 +657,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
         work = cursor.get("work")
         if work is None:
             protocol = {
-                "instruction": "Choose exactly one legal action. Color is only a label. No independent attack, promotion, remote join, object destruction, HP or rewards. During rest, move and invite are forbidden. Pawn orthogonal step or occupied diagonal step; knight jumps without intermediate path.",
+                "instruction": "Choose one concrete legal action for your own goals in this spatial world. Read navigation and your recent heard speech: saying you will go somewhere is not movement. A conversation does NOT require wait and does NOT require permission to depart; a legal move leaves it automatically. If a destination/person is unknown, you may explore or use your own uncertain remembered reports, never hidden coordinates. Consider whether another wait advances your purpose. Waiting remains a valid personal choice; no compulsory travel. During turn-start rest, move/invite are forbidden. Color is only a label; no independent attack, promotion, remote join, object creation/destruction, HP or rewards.",
                 "mode": state["mode"],
             }
             result = await self.ask(

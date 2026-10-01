@@ -33,6 +33,8 @@ class ModelError(Exception):
             "ENVELOPE_INVALID",
             "CONTENT_MISSING",
             "REASONING_BUDGET_EXCEEDED",
+            "INTERNAL_REFERENCE",
+            "REPETITIVE_SPEECH",
         }
         if isinstance(details.get("reason"), str) and details["reason"] in reasons:
             self.details["reason"] = details["reason"]

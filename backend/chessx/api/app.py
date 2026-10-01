@@ -21,7 +21,7 @@ from chessx.domain.errors import RuleError
 from chessx.domain.models import Scenario
 from chessx.domain.scenarios import create_world, load_scenario
 from chessx.llm import ModelError
-from chessx.llm.provider import SYSTEM_PROTOCOL
+from chessx.llm.provider import prompt_manifest
 from chessx.presets import PresetError, PresetLibrary
 from chessx.runtime.runner import WorldRunner
 from chessx.storage import Store
@@ -260,7 +260,7 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
                     "context_capacity": settings.context_capacity,
                 }
             ),
-            prompt_hash=digest(SYSTEM_PROTOCOL),
+            prompt_hash=digest(prompt_manifest()),
         )
         if frozen_source is not None:
             if frozen_source.get("discipline") is not None:

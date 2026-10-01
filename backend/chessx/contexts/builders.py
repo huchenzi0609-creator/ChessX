@@ -4,6 +4,7 @@ from copy import deepcopy
 
 from chessx.domain.scenarios import frozen_discipline
 
+from .agency import dialogue_recall, navigation
 from .projections import _plain, observe
 
 PROTOCOL_FIELDS = {
@@ -62,6 +63,8 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
     if discipline is None:
         # Legacy saved worlds predate the shared discipline snapshot.
         discipline, discipline_hash = frozen_discipline()
+    observation = observe(state, pid)
+    receipts = state.get("receipts", {}).get(pid, [])
     return {
         "discipline": discipline,
         "discipline_hash": discipline_hash,
@@ -90,7 +93,17 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
         "memory": private.get("memory", ""),
         "goals": private.get("goals", ""),
         "receipts": deepcopy(state.get("receipts", {}).get(pid, [])[-30:]),
-        "observation": observe(state, pid),
+        "observation": observation,
+        **(
+            {"navigation": navigation(observation, receipts, pid, stage)}
+            if stage in {"action", "ordinary"}
+            else {}
+        ),
+        **(
+            {"dialogue_recall": dialogue_recall(receipts, pid, protocol.get("conversation_id"))}
+            if stage in {"action", "ordinary", "negotiation", "settlement"}
+            else {}
+        ),
         "protocol": protocol,
     }
 

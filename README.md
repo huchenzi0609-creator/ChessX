@@ -39,6 +39,7 @@ chmod 600 .env.local
 
 - [已确认设计规范v2.1](docs/ChessX-Spec-v2.1.md)：R01–R16的执行基线。
 - [人物与预设编写](docs/CHARACTER_AUTHORING.md)：完整私人Markdown、共用纪律与跨组引用。
+- [交谈与行动规范](docs/AGENT_BEHAVIOR.md)：自然台词、内部引用拦截、移动意识与吟游诗人成稿长度。
 - [Changelog](CHANGELOG.md)：每版变更与验收记录。
 - [架构与扩展](docs/ARCHITECTURE.md)：模块责任、数据与事件事务、权限边界。
 - [验收记录](docs/VALIDATION.md)：实际验证范围、真实模型结果和限制。

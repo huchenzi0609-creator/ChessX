@@ -294,6 +294,7 @@ class DialogueMixin:
                 "conversation_id": cid,
                 "member_ids": list(conv["members"]),
                 "message_count": len(conv["counted_message_ids"]),
+                "instruction": "Talk as this person, not as an investigator giving a report. Read dialogue_recall, address one new point, vary length with actual content. Do not echo plans or interrogate by default. Use pass for nothing new or leave if you want to go; physical movement is available at your next eligible primary action, not through speech. Never say source/citation numbers.",
                 "remaining_messages": state["limits"]["conversation_max_messages"]
                 - len(conv["counted_message_ids"]),
             },

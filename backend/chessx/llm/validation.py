@@ -12,6 +12,7 @@ from jsonschema import Draft202012Validator
 from jsonschema.exceptions import SchemaError
 
 from .interface import ModelError
+from .speech import validate_speech_text
 
 
 class TokenCounter:
@@ -95,7 +96,7 @@ def extract_response(message: dict, *, probe: bool = False) -> tuple[str, str]:
 
 
 def validate_output(
-    content: str, reasoning: str, schema: dict, counter: TokenCounter, max_output_tokens: int
+    content: str, reasoning: str, schema: dict, counter: TokenCounter, max_output_tokens: int | None
 ) -> dict:
     reasoning_tokens = counter.count(reasoning)
     if reasoning_tokens > 1000:
@@ -109,7 +110,7 @@ def validate_output(
             },
         )
     formal_tokens = counter.count(content)
-    if formal_tokens > max_output_tokens:
+    if max_output_tokens is not None and formal_tokens > max_output_tokens:
         raise ModelError(
             "MODEL_OUTPUT_INVALID",
             "Formal output exceeds its configured token budget.",
@@ -174,6 +175,12 @@ def validate_output(
                         "SPEECH_BUDGET_EXCEEDED", "Formal speech exceeds the 100-token limit."
                     )
                 walk(item)
+                if (
+                    key in {"speech", "text"}
+                    and "event_refs" not in value
+                    and isinstance(item, str)
+                ):
+                    validate_speech_text(item)
         elif isinstance(value, list):
             for item in value:
                 walk(item)
