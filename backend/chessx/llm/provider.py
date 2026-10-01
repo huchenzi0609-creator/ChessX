@@ -25,7 +25,17 @@ settlement. Do not disclose another participant's private memory or motives in
 public battle narration. Event-based stories must cite supplied event IDs."""
 
 
-def compose_messages(stage: str, context: dict, schema: dict) -> list[dict[str, str]]:
+STAGE_OUTPUT_LIMITS = {
+    "memory": 1024,
+    "bard": 2048,
+    "battle_narrator": 768,
+    "capability_probe": 128,
+}
+
+
+def compose_messages(
+    stage: str, context: dict, schema: dict, maximum: int | None = None
+) -> list[dict[str, str]]:
     """Separate common instructions from owner-private narrative input.
 
     Personal histories and goals remain descriptive user data; they never gain
@@ -33,7 +43,24 @@ def compose_messages(stage: str, context: dict, schema: dict) -> list[dict[str, 
     """
     data = deepcopy(context)
     discipline = data.pop("discipline", None)
-    messages = [{"role": "system", "content": SYSTEM_PROTOCOL}]
+    maximum = maximum or STAGE_OUTPUT_LIMITS.get(stage, 512)
+    instructions = (
+        SYSTEM_PROTOCOL
+        + f"\nThe ENTIRE formal JSON, including all fields and citations, must fit within {maximum} tokens. "
+        "Aim below 80% of this budget. Use exactly the schema field names; omit any undeclared fields. "
+        "No Markdown fences, preamble or reasoning fields in formal JSON. Keep reasoning brief."
+    )
+    if stage == "memory":
+        instructions += (
+            "\nThis is a private memory editor, not a speech. Summarize evolving memories concisely; "
+            "do not copy the immutable persona, whole transcript or original goals. "
+            "Budget roughly 350 tokens for memory, 180 for changed goals, 40 for reason_summary; "
+            "leave space for JSON and exact source_receipt_ids. Cite a small relevant selection of PROVIDED receipts, not every receipt. "
+            "If goal_decision is keep, goals_markdown may be an empty string: the engine retains current goals. "
+            "Use only these fields: memory, goals_markdown, goal_decision, goal_status, reason_summary, source_receipt_ids. "
+            "These are field/size instructions, not a direction to change or retain your goals."
+        )
+    messages = [{"role": "system", "content": instructions}]
     if isinstance(discipline, str) and discipline.strip():
         messages.append(
             {
@@ -166,7 +193,7 @@ class ProviderAdapter:
     ) -> ModelResult:
         if maximum < 1:
             raise ModelError("MODEL_CONFIG_INVALID", "Output budget must be positive.")
-        messages = compose_messages(stage, context, schema)
+        messages = compose_messages(stage, context, schema, maximum)
         key = self._api_key.get_secret_value()
         if key and any(key in message["content"] for message in messages):
             raise ModelError(
@@ -222,12 +249,19 @@ class ProviderAdapter:
             envelope = response.json()
             choice = envelope["choices"][0]
             message = choice["message"]
+            if choice.get("finish_reason") == "length":
+                raise ModelError(
+                    "MODEL_OUTPUT_INVALID",
+                    "Provider response was truncated.",
+                    details={"reason": "RESPONSE_TRUNCATED", "limit": maximum},
+                )
             if not isinstance(message, dict) or choice.get("finish_reason") not in {"stop", None}:
                 raise ValueError()
         except (ValueError, KeyError, IndexError, TypeError):
             raise ModelError(
                 "MODEL_OUTPUT_INVALID",
                 "Provider returned an invalid or incomplete response envelope.",
+                details={"reason": "ENVELOPE_INVALID"},
             ) from None
         text, reasoning = extract_response(message, probe=probe)
         secret = self._api_key.get_secret_value()

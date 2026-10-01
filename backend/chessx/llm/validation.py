@@ -75,7 +75,11 @@ def _unique_pairs(pairs: list[tuple[str, object]]) -> dict:
 def extract_response(message: dict, *, probe: bool = False) -> tuple[str, str]:
     content = message.get("content")
     if not isinstance(content, str):
-        raise ModelError("MODEL_OUTPUT_INVALID", "Response must contain complete text content.")
+        raise ModelError(
+            "MODEL_OUTPUT_INVALID",
+            "Response must contain complete text content.",
+            details={"reason": "CONTENT_MISSING"},
+        )
     reasoning = message.get("reasoning_content", message.get("reasoning"))
     # A summary or token count is never an exposed reasoning trace.
     if reasoning is None:
@@ -93,11 +97,27 @@ def extract_response(message: dict, *, probe: bool = False) -> tuple[str, str]:
 def validate_output(
     content: str, reasoning: str, schema: dict, counter: TokenCounter, max_output_tokens: int
 ) -> dict:
-    if counter.count(reasoning) > 1000:
-        raise ModelError("COT_BUDGET_EXCEEDED", "Exposed reasoning exceeds the 1000-token limit.")
-    if counter.count(content) > max_output_tokens:
+    reasoning_tokens = counter.count(reasoning)
+    if reasoning_tokens > 1000:
         raise ModelError(
-            "MODEL_OUTPUT_INVALID", "Formal output exceeds its configured token budget."
+            "COT_BUDGET_EXCEEDED",
+            "Exposed reasoning exceeds the 1000-token limit.",
+            details={
+                "reason": "REASONING_BUDGET_EXCEEDED",
+                "actual_tokens": reasoning_tokens,
+                "limit": 1000,
+            },
+        )
+    formal_tokens = counter.count(content)
+    if formal_tokens > max_output_tokens:
+        raise ModelError(
+            "MODEL_OUTPUT_INVALID",
+            "Formal output exceeds its configured token budget.",
+            details={
+                "reason": "FORMAL_BUDGET_EXCEEDED",
+                "actual_tokens": formal_tokens,
+                "limit": max_output_tokens,
+            },
         )
     try:
         parsed = json.loads(
@@ -107,10 +127,16 @@ def validate_output(
         )
     except (ValueError, TypeError):
         raise ModelError(
-            "MODEL_OUTPUT_INVALID", "Response must be a complete, unambiguous JSON object."
+            "MODEL_OUTPUT_INVALID",
+            "Response must be a complete, unambiguous JSON object.",
+            details={"reason": "JSON_INVALID"},
         ) from None
     if not isinstance(parsed, dict):
-        raise ModelError("MODEL_OUTPUT_INVALID", "Formal output must be a JSON object.")
+        raise ModelError(
+            "MODEL_OUTPUT_INVALID",
+            "Formal output must be a JSON object.",
+            details={"reason": "OBJECT_REQUIRED"},
+        )
     try:
         Draft202012Validator.check_schema(schema)
         errors = list(Draft202012Validator(schema).iter_errors(parsed))
@@ -120,7 +146,15 @@ def validate_output(
         ) from None
     if errors:
         # jsonschema error messages can contain private input values.
-        raise ModelError("MODEL_OUTPUT_INVALID", "Formal output does not match the stage schema.")
+        raise ModelError(
+            "MODEL_OUTPUT_INVALID",
+            "Formal output does not match the stage schema.",
+            details={
+                "reason": "SCHEMA_MISMATCH",
+                "violation_count": len(errors),
+                "schema_keywords": [e.validator for e in errors],
+            },
+        )
 
     def walk(value: object) -> None:
         if isinstance(value, dict):
@@ -129,6 +163,7 @@ def validate_output(
                     raise ModelError(
                         "MODEL_OUTPUT_INVALID",
                         "Reasoning fields are not permitted in formal output.",
+                        details={"reason": "REASONING_IN_FORMAL_OUTPUT"},
                     )
                 if (
                     (key == "speech" or key == "text" and "event_refs" not in value)

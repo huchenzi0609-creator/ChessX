@@ -241,11 +241,25 @@ class Store:
         return attempt
 
     def fail_operation(
-        self, world_id: str, slot: str, attempt: int, code: str, obsolete: bool = False
+        self,
+        world_id: str,
+        slot: str,
+        attempt: int,
+        code: str,
+        obsolete: bool = False,
+        *,
+        details: dict | None = None,
     ) -> None:
         self.db.execute(
-            "UPDATE operations SET status=?,error_code=? WHERE world_id=? AND slot=? AND attempt=?",
-            ("obsolete" if obsolete else "failed", code, world_id, slot, attempt),
+            "UPDATE operations SET status=?,error_code=?,result=? WHERE world_id=? AND slot=? AND attempt=?",
+            (
+                "obsolete" if obsolete else "failed",
+                code,
+                canonical({"validation": details}) if details else None,
+                world_id,
+                slot,
+                attempt,
+            ),
         )
 
     def operation_records(self, world_id: str, owner: str) -> list[dict]:

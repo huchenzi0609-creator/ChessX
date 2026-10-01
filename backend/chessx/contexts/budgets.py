@@ -20,13 +20,15 @@ STAGE_INPUT_LIMITS = {
 }
 
 
-def request_input_tokens(stage: str, context: dict, schema: dict, counter) -> int:
+def request_input_tokens(
+    stage: str, context: dict, schema: dict, counter, max_output_tokens: int | None = None
+) -> int:
     """Count the exact request text plus conservative chat framing allowance.
 
     Provider-native message framing/billing is provider-dependent. The allowance
     is capacity reservation and must not be presented as measured billed usage.
     """
-    messages = compose_messages(stage, context, schema)
+    messages = compose_messages(stage, context, schema, max_output_tokens)
     return sum(counter.count(message["content"]) for message in messages) + FRAMING_ALLOWANCE
 
 
@@ -58,7 +60,7 @@ def fit_context(
         raise ModelError("CONTEXT_BUDGET_EXCEEDED", "Stage input limit must be positive.")
 
     def fits() -> bool:
-        count = request_input_tokens(stage, fitted, schema, counter)
+        count = request_input_tokens(stage, fitted, schema, counter, max_output_tokens)
         return (
             count <= input_limit and count + max_output_tokens + REASONING_RESERVE <= model_capacity
         )

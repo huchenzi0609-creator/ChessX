@@ -19,6 +19,7 @@ from chessx.domain.errors import RuleError
 from chessx.domain.models import Intent
 from chessx.domain.profile import RULE_MANIFEST_HASH, frozen_rule_manifest
 from chessx.llm import FixtureAdapter, ModelError, ProviderAdapter
+from chessx.llm.provider import STAGE_OUTPUT_LIMITS
 from chessx.rules.actions import apply_primary, create_transfer_offer, resolve_transfer
 from chessx.rules.geometry import begin_turn, legal_move, rest_at_start, visible_positions
 from chessx.runtime import schemas
@@ -291,15 +292,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 "Credentials cannot enter model context or operation records.",
             )
         adapter = self.adapter(state)
-        maximum = (
-            2048
-            if stage == "bard"
-            else 1024
-            if stage == "memory"
-            else 768
-            if stage == "battle_narrator"
-            else 512
-        )
+        maximum = STAGE_OUTPUT_LIMITS.get(stage, 512)
         context = fit_context(
             stage,
             context,
@@ -326,7 +319,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 model_capacity=self.settings.context_capacity,
                 input_limit=self.settings.character_input_limit if pid is not None else None,
             )
-            estimated = request_input_tokens(stage, context, schema, adapter.counter)
+            estimated = request_input_tokens(stage, context, schema, adapter.counter, maximum)
             if (
                 calls - state.get("budget_base_calls", 0)
                 >= state.get("budget", {}).get("max_calls", 1000)
@@ -374,10 +367,13 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 raise
             except (ModelError, RuleError, ValidationError) as error:
                 code = getattr(error, "code", "SCHEMA_INVALID")
-                self.store.fail_operation(wid, slot, attempt, code)
+                details = error.details if isinstance(error, ModelError) else {}
+                self.store.fail_operation(wid, slot, attempt, code, details=details)
                 context.setdefault("protocol", {})["validation_feedback"] = {
                     "code": code,
-                    "instruction": "Return only a legal response to the same stage; no fallback action.",
+                    "details": details,
+                    "formal_output_token_limit": maximum,
+                    "instruction": "Correct the indicated failure and return one complete JSON object with ONLY the supplied schema fields. Shorten text to fit the ENTIRE formal output budget; keep exposed reasoning well below 1000 tokens. Do not change world facts or use a fallback action.",
                 }
                 if code in {
                     "MODEL_AUTH_FAILED",
@@ -392,7 +388,11 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 }:
                     raise
                 await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
-        raise ModelError(code, "The response did not pass validation after the bounded attempts.")
+        raise ModelError(
+            code,
+            "The response did not pass validation after the bounded attempts.",
+            details=details,
+        )
 
     async def ensure_probe(self, state, adapter):
         """Probe once per loaded configuration; charge it to the real call budget."""
@@ -434,7 +434,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             self.store.fail_operation(wid, slot, attempt, "CANCELLED", True)
             raise
         except ModelError as error:
-            self.store.fail_operation(wid, slot, attempt, error.code)
+            self.store.fail_operation(wid, slot, attempt, error.code, details=error.details)
             raise
         except BudgetError:
             self.store.fail_operation(wid, slot, attempt, BudgetError.code)
@@ -473,6 +473,8 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                     else "The current operation could not complete. Check configuration or retry this preserved cursor."
                 ),
             }
+            if isinstance(error, ModelError) and error.details:
+                current["error"]["details"] = error.details
             return self.store.commit(
                 current,
                 [

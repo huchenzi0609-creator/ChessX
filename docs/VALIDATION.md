@@ -16,7 +16,7 @@
 
 | 范围 | 结果 | 证据 |
 |---|---|---|
-| 后端 | 247项离线测试通过 | tests/；pytest |
+| 后端 | 256项离线测试通过 | tests/；pytest |
 | 前端 | 24项组件／状态／契约测试通过 | frontend/src/**/*.test.tsx及api.test.ts |
 | 静态检查 | Ruff lint／格式、TypeScript、Prettier通过 | pyproject.toml／frontend package scripts |
 | 前端生产构建 | 通过 | Vite bundle，约87 KB gzip JS |
@@ -55,6 +55,15 @@
 - 此前超时未复现，现有证据不能确定当时是排队或服务故障；鉴权和请求协议现在可用。
   调整总时限为120秒、连接最多10秒，并补齐运行墙钟预算中断及失败不自动重复付费请求的测试。
 - 保留已暂停的用户世界和原进度，未自动续跑其对局。短局记录在Git忽略的 `data/live-validation.sqlite3` 与 `data/live-smoke-summary.json`。
+
+## 第4回合记忆错误的专项复测（2026-10-02）
+
+- 从本地8角色失败存档读取MEMORY阶段，复现完整JSON超限1251／1024及schema额外字段，未打印正文。
+- 本次共5次生成请求：原样诊断2次；隔离副本恢复3次（1次探测、1次推理超限被拒、1次成功记忆整理）。
+  修复后的正式输出590 token、公开推理207 token；记忆版本、watermark和cursor仅在成功时推进。
+- 原用户对局未被重置或覆盖；隔离记录在Git忽略的 `data/memory-validation.sqlite3` 与摘要文件。
+- 验证输入显式预算与精确、安全反馈，超限／截断／格式失败不会变成世界事实。
+  此修复不能保证随机模型永不生成不合规输出；仍保留有界重试与可恢复暂停。
 
 ## 实施边界与后续
 

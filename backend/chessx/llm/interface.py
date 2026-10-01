@@ -17,9 +17,49 @@ class ModelResult:
 class ModelError(Exception):
     """A deliberately sanitized error safe to persist and show locally."""
 
-    def __init__(self, code: str, message: str):
+    def __init__(self, code: str, message: str, *, details: dict | None = None):
         self.code = code
         self.message = message
+        # Whitelist metadata; never carry upstream content, field values or paths.
+        details = details or {}
+        self.details = {}
+        reasons = {
+            "FORMAL_BUDGET_EXCEEDED",
+            "JSON_INVALID",
+            "OBJECT_REQUIRED",
+            "SCHEMA_MISMATCH",
+            "REASONING_IN_FORMAL_OUTPUT",
+            "RESPONSE_TRUNCATED",
+            "ENVELOPE_INVALID",
+            "CONTENT_MISSING",
+            "REASONING_BUDGET_EXCEEDED",
+        }
+        if isinstance(details.get("reason"), str) and details["reason"] in reasons:
+            self.details["reason"] = details["reason"]
+        for key in ("actual_tokens", "limit", "violation_count"):
+            value = details.get(key)
+            if type(value) is int and value >= 0:
+                self.details[key] = value
+        keywords = details.get("schema_keywords", [])
+        allowed = {
+            "required",
+            "additionalProperties",
+            "enum",
+            "const",
+            "type",
+            "anyOf",
+            "oneOf",
+            "minItems",
+            "minLength",
+            "uniqueItems",
+            "maximum",
+            "minimum",
+            "pattern",
+        }
+        if "schema_keywords" in details and isinstance(keywords, list):
+            self.details["schema_keywords"] = sorted(
+                {k for k in keywords if isinstance(k, str) and k in allowed}
+            )
         super().__init__(message)
 
 
