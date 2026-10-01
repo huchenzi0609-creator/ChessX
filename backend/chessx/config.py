@@ -18,6 +18,7 @@ class Settings(BaseModel):
     tokenizer_agreement: bool = False
     timeout_seconds: float = 45
     context_capacity: int = Field(default=16384, ge=4096)
+    character_input_limit: int = Field(default=8192, ge=1024)
     data_dir: Path = ROOT / "data"
 
     @property
@@ -47,5 +48,6 @@ class Settings(BaseModel):
             tokenizer_agreement=get("TOKENIZER_AGREEMENT", "false").lower() == "true",
             timeout_seconds=float(get("TIMEOUT_SECONDS", "45")),
             context_capacity=int(get("CONTEXT_CAPACITY", "16384")),
+            character_input_limit=int(get("CHARACTER_INPUT_LIMIT", "8192")),
             data_dir=data,
         )

@@ -4,11 +4,10 @@ All character anchors, present goals/memory and narrator participant memories
 are immutable inputs. Oversized essential inputs pause before network activity.
 """
 
-import json
 from copy import deepcopy
 
 from chessx.llm import ModelError
-from chessx.llm.provider import SYSTEM_PROTOCOL
+from chessx.llm.provider import compose_messages
 
 REASONING_RESERVE = 1000
 FRAMING_ALLOWANCE = 128
@@ -27,12 +26,8 @@ def request_input_tokens(stage: str, context: dict, schema: dict, counter) -> in
     Provider-native message framing/billing is provider-dependent. The allowance
     is capacity reservation and must not be presented as measured billed usage.
     """
-    serialized = json.dumps(
-        {"stage": stage, "context": context, "output_schema": schema},
-        ensure_ascii=False,
-        allow_nan=False,
-    )
-    return counter.count(SYSTEM_PROTOCOL) + counter.count(serialized) + FRAMING_ALLOWANCE
+    messages = compose_messages(stage, context, schema)
+    return sum(counter.count(message["content"]) for message in messages) + FRAMING_ALLOWANCE
 
 
 def fit_context(
@@ -43,6 +38,7 @@ def fit_context(
     *,
     max_output_tokens: int,
     model_capacity: int = 16384,
+    input_limit: int | None = None,
 ) -> dict:
     """Return an independent fitted DTO, preserving the canonical receipt archive.
 
@@ -56,7 +52,10 @@ def fit_context(
             "CONTEXT_BUDGET_EXCEEDED", "Model capacity and output reservation must be positive."
         )
     fitted = deepcopy(context)
-    input_limit = STAGE_INPUT_LIMITS.get(stage, 4096)
+    if input_limit is None:
+        input_limit = STAGE_INPUT_LIMITS.get(stage, 4096)
+    if input_limit < 1:
+        raise ModelError("CONTEXT_BUDGET_EXCEEDED", "Stage input limit must be positive.")
 
     def fits() -> bool:
         count = request_input_tokens(stage, fitted, schema, counter)

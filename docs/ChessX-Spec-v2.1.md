@@ -1140,10 +1140,12 @@ R01–R16已确认，实施先冻结本版规则档和工程参数，再打通�
 
 ### 21.1 设计基线与研究报告
 
+参考项目研究报告保留在仓库外的 `Project_APVH/docs`，不随本 Git 仓库分发；下列本机链接仅用于追溯。
+
 - [ChessX v1.0](history/ChessX-Spec-v1.0.md)、[设计决定清单](history/设计决定清单.md)。早期评估文档用于理解演变，不覆盖后续已定立场。
-- [wolfcha项目研究报告](references/wolfcha项目研究报告.md)：§4信息隔离、§6公开输出、§7异步身份。
-- [ai-town项目研究报告](references/ai-town项目研究报告.md)：§3–5世界写入、§7规则驱动边界、§8记忆。
-- [jubensha-ai项目研究报告](references/jubensha-ai项目研究报告.md)：§4三层角色、§6调度、§7私密证据、§11事件通信。
+- [wolfcha项目研究报告](../../../Project_APVH/docs/02-wolfcha/wolfcha项目研究报告.md)：§4信息隔离、§6公开输出、§7异步身份。
+- [ai-town项目研究报告](../../../Project_APVH/docs/01-ai-town/ai-town项目研究报告.md)：§3–5世界写入、§7规则驱动边界、§8记忆。
+- [jubensha-ai项目研究报告](../../../Project_APVH/docs/03-jubensha-ai/jubensha-ai项目研究报告.md)：§4三层角色、§6调度、§7私密证据、§11事件通信。
 
 v2.0研究阶段重点读取上述机制与配套技术资料，不把社区星数、在线活跃度或报告中的旧依赖版本作为架构选择依据。
 

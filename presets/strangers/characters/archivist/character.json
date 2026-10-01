@@ -1,0 +1,10 @@
+{
+  "id": "archivist",
+  "name": "档案员",
+  "type": "bishop",
+  "color": "墨",
+  "position": {
+    "row": 2,
+    "col": 2
+  }
+}

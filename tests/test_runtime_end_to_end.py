@@ -54,10 +54,9 @@ def test_five_turn_segment_resume_replay_and_private_archive(tmp_path):
         assert raw["rule_manifest"]["spec_version"] == "2.1"
         for pid in raw["pieces"]:
             assert raw["private"][pid]["goals"]
-            assert (
-                raw["private"][pid]["persona"]
-                == raw["scenario"]["pieces"][raw["actor_order"].index(pid)]["private_text"]
-            )
+            assert raw["private"][pid]["persona"] == raw["private"][pid]["initial_memory"]
+            public_piece = raw["scenario"]["pieces"][raw["actor_order"].index(pid)]
+            assert not public_piece.get("private_text")
 
 
 def test_budget_is_not_silence_or_game_over_and_resume_continues_same_slot(tmp_path):

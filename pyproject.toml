@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "chessx"
-version = "0.1.0"
+version = "0.2.0"
 description = "A local, event-sourced emergent narrative experiment"
 requires-python = ">=3.12"
 dependencies = [

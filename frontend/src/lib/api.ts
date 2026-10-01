@@ -8,6 +8,13 @@ import type {
   Validation,
   World,
   WorldSummary,
+  PresetSummary,
+  PresetDetail,
+  CharacterSummary,
+  CharacterDocument,
+  CharacterInfo,
+  ScenarioDocument,
+  PresetScenario,
 } from './types';
 export class ApiError extends Error {
   constructor(
@@ -45,8 +52,42 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 }
 const id = encodeURIComponent;
 const post = (body: unknown): RequestInit => ({ method: 'POST', body: JSON.stringify(body) });
+const put = (body: unknown): RequestInit => ({ method: 'PUT', body: JSON.stringify(body) });
 export const api = {
   health: () => request<Health>('/health'),
+  presets: () => request<PresetSummary[]>('/presets'),
+  preset: (groupId: string) => request<PresetDetail>(`/presets/${id(groupId)}`),
+  createPreset: (body: { id: string; title: string; description: string }) =>
+    request<PresetSummary>('/presets', post(body)),
+  characters: () => request<CharacterSummary[]>('/characters'),
+  character: (groupId: string, characterId: string) =>
+    request<CharacterDocument>(`/presets/${id(groupId)}/characters/${id(characterId)}`),
+  saveCharacter: (
+    groupId: string,
+    character: CharacterInfo,
+    designMarkdown: string,
+    revision?: string,
+  ) =>
+    request<CharacterDocument>(
+      `/presets/${id(groupId)}/characters/${id(character.id)}`,
+      put({
+        character,
+        design_markdown: designMarkdown,
+        ...(revision ? { expected_revision: revision } : {}),
+      }),
+    ),
+  presetScenario: (groupId: string) =>
+    request<ScenarioDocument>(`/presets/${id(groupId)}/scenario`),
+  savePresetScenario: (groupId: string, scenario: PresetScenario, revision: string) =>
+    request<ScenarioDocument>(
+      `/presets/${id(groupId)}/scenario`,
+      put({ scenario, expected_revision: revision }),
+    ),
+  validatePreset: (groupId: string) =>
+    request<Validation>(`/presets/${id(groupId)}/validate`, post({})),
+  createFromPreset: (presetId: string, mode: 'fixture' | 'live') =>
+    request<World>('/worlds/from-preset', post({ preset_id: presetId, mode })),
+  discipline: () => request<{ markdown: string; revision: string }>('/discipline'),
   scenarios: () => request<ScenarioSummary[]>('/scenarios'),
   scenario: (scenarioId: string) => request<RecordData>(`/scenarios/${id(scenarioId)}`),
   validate: (scenario: unknown) => request<Validation>('/scenarios/validate', post(scenario)),

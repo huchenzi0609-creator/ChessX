@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.1",
+  "scenario_id": "the-seal",
+  "title": "印信与承诺",
+  "board": {
+    "rows": 8,
+    "cols": 8
+  },
+  "rule_profile": "demo-v2.1",
+  "objects": [
+    {
+      "id": "seal",
+      "name": "旧印信",
+      "description": "边缘磨损的铜质印信。",
+      "location": {
+        "kind": "ground",
+        "position": {
+          "row": 3,
+          "col": 2
+        }
+      }
+    }
+  ],
+  "limits": {
+    "battle_max_rounds": 4,
+    "conversation_max_messages": 50
+  },
+  "characters": [
+    {
+      "group_id": "the-seal",
+      "character_id": "keeper"
+    },
+    {
+      "group_id": "the-seal",
+      "character_id": "messenger"
+    }
+  ]
+}

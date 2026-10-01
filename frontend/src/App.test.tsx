@@ -13,6 +13,9 @@ vi.mock('./lib/api', () => ({
     inspection: vi.fn(),
     scenarios: vi.fn(),
     scenario: vi.fn(),
+    presets: vi.fn(),
+    characters: vi.fn(),
+    discipline: vi.fn(),
     replay: vi.fn(),
   },
 }));
@@ -37,6 +40,9 @@ const world: World = {
 describe('observatory information isolation', () => {
   beforeEach(() => {
     vi.mocked(api.scenarios).mockResolvedValue([]);
+    vi.mocked(api.presets).mockResolvedValue([]);
+    vi.mocked(api.characters).mockResolvedValue([]);
+    vi.mocked(api.discipline).mockResolvedValue({ markdown: '# 纪律', revision: 'r1' });
     vi.mocked(api.health).mockResolvedValue({
       status: 'ok',
       model_configured: false,
@@ -94,6 +100,32 @@ describe('observatory information isolation', () => {
     fireEvent.click(screen.getByText('检查输入、输出与 API 公开推理'));
     await waitFor(() => expect(api.inspection).toHaveBeenCalledWith('w1', 'a'));
     await screen.findByText(/授权私密推理/);
+  });
+  it('keeps the role itself selected when a neighboring character is visible', async () => {
+    vi.mocked(api.perspective).mockResolvedValue({
+      world_id: 'w1',
+      piece_id: 'a',
+      turn: 1,
+      seq: 1,
+      observation: {
+        self: { id: 'a', name: '信使', type: 'pawn', position: { row: 1, col: 1 } },
+        pieces: [{ id: 'b', name: '邻近人物', type: 'rook', position: { row: 1, col: 2 } }],
+        visible_cells: [
+          { row: 1, col: 1 },
+          { row: 1, col: 2 },
+        ],
+      },
+      receipts: [],
+      private: { persona: '# 自己的人物设计\n公开目标私有哨兵。', memory: '自身经历' },
+    });
+    render(<App />);
+    await screen.findByText('全局发言哨兵');
+    fireEvent.change(screen.getByLabelText('观测视角'), { target: { value: 'piece:a' } });
+    await screen.findByText('本人资料 · 仅角色视角');
+    fireEvent.click(screen.getByText('个人资料'));
+    await waitFor(() => expect(screen.getByText(/公开目标私有哨兵/)).toBeInTheDocument());
+    expect(document.querySelector('.inspector h2')).toHaveTextContent('信使');
+    expect(screen.getAllByRole('button', { name: /邻近人物/ })).toHaveLength(2);
   });
   it('supports the initial zero checkpoint and keeps simulation controls read-only', async () => {
     vi.mocked(api.replay).mockResolvedValue({ ...world, turn: 0, seq: 0 });

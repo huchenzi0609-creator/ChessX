@@ -1,0 +1,10 @@
+{
+  "id": "dissenter",
+  "name": "异议者",
+  "type": "queen",
+  "color": "青",
+  "position": {
+    "row": 4,
+    "col": 4
+  }
+}

@@ -14,6 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
+from chessx.api.presets import register_presets
 from chessx.api.projections import observer, perspective, public_event
 from chessx.config import ROOT, Settings
 from chessx.domain.errors import RuleError
@@ -21,6 +22,7 @@ from chessx.domain.models import Scenario
 from chessx.domain.scenarios import create_world, load_scenario
 from chessx.llm import ModelError
 from chessx.llm.provider import SYSTEM_PROTOCOL
+from chessx.presets import PresetError, PresetLibrary
 from chessx.runtime.runner import WorldRunner
 from chessx.storage import Store
 from chessx.storage.store import canonical, digest
@@ -59,22 +61,23 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
     async def lifespan(app):
         app.state.store = store or Store(settings.data_dir / "chessx.sqlite3")
         app.state.runner = WorldRunner(app.state.store, settings)
+        app.state.presets = PresetLibrary(ROOT / "presets", settings.data_dir / "presets")
         app.state.runner.recover()
         yield
         await app.state.runner.close()
         if store is None:
             app.state.store.close()
 
-    app = FastAPI(title="ChessX", version="0.1.0", lifespan=lifespan)
+    app = FastAPI(title="ChessX", version="0.2.0", lifespan=lifespan)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
+            "http://localhost:5180",
+            "http://127.0.0.1:5180",
+            "http://localhost:8001",
+            "http://127.0.0.1:8001",
         ],
-        allow_methods=["GET", "POST"],
+        allow_methods=["GET", "POST", "PUT"],
         allow_headers=["Content-Type", "Last-Event-ID"],
     )
 
@@ -82,10 +85,10 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
     async def local_origin(request, call_next):
         origin = request.headers.get("origin")
         allowed = {
-            "http://localhost:5173",
-            "http://127.0.0.1:5173",
-            "http://localhost:8000",
-            "http://127.0.0.1:8000",
+            "http://localhost:5180",
+            "http://127.0.0.1:5180",
+            "http://localhost:8001",
+            "http://127.0.0.1:8001",
         }
         if origin and origin not in allowed:
             return JSONResponse(
@@ -182,29 +185,49 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
     async def scenario(sid: str):
         if sid not in {p.stem for p in (ROOT / "scenarios").glob("*.json")}:
             raise HTTPException(404, "SCENARIO_NOT_FOUND")
-        scenario, personas = load_scenario(ROOT / "scenarios" / (sid + ".json"))
-        value = scenario.model_dump(exclude_none=True)
-        for piece in value["pieces"]:
-            piece.pop("private_file", None)
-            piece["private_text"] = personas[piece["id"]]
-        return value
+        config, _ = load_scenario(ROOT / "scenarios" / (sid + ".json"))
+        return config.model_dump(exclude_none=True)
+
+    def resolve_designs(config: Scenario) -> dict[str, str]:
+        designs = {}
+        for piece in config.pieces:
+            if piece.private_file:
+                from pathlib import PurePosixPath
+
+                reference = PurePosixPath(piece.private_file)
+                parts = reference.parts
+                if (
+                    reference.is_absolute()
+                    or len(parts) != 4
+                    or parts[1] != "characters"
+                    or parts[3] != "design.md"
+                ):
+                    raise HTTPException(422, "PERSONA_REFERENCE_INVALID")
+                source = app.state.presets.get_character(parts[0], parts[2])
+                designs[piece.id] = source["design_markdown"]
+            else:
+                # Compatibility-only transport. The preset writer forbids inline private JSON.
+                designs[piece.id] = piece.private_text or ""
+        reject_embedded_key(designs)
+        return designs
 
     @app.post("/api/scenarios/validate")
     async def validate_scenario(value: dict):
         reject_embedded_key(value)
         try:
             parsed = Scenario.model_validate(value)
-            if any(p.private_file for p in parsed.pieces):
-                return {
-                    "valid": False,
-                    "errors": [
-                        {
-                            "path": "pieces.private_file",
-                            "message": "API imports must use inline private_text, not server file paths.",
-                        }
-                    ],
-                }
+            resolve_designs(parsed)
             return {"valid": True, "errors": []}
+        except (PresetError, HTTPException):
+            return {
+                "valid": False,
+                "errors": [
+                    {
+                        "path": "pieces.private_file",
+                        "message": "Character Markdown reference cannot be resolved.",
+                    }
+                ],
+            }
         except ValidationError as error:
             return {
                 "valid": False,
@@ -214,23 +237,20 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
                 ],
             }
 
-    @app.post("/api/worlds", status_code=201)
-    async def world(body: CreateWorld):
-        reject_embedded_key(body.scenario.model_dump())
-        if any(p.private_file for p in body.scenario.pieces):
-            raise HTTPException(422, "INLINE_PERSONA_REQUIRED")
+    async def materialize_world(config, personas, mode, *, preset_source=None, frozen_source=None):
+        reject_embedded_key({"scenario": config.model_dump(), "designs": personas})
         state = create_world(
-            body.scenario,
-            {p.id: p.private_text or "" for p in body.scenario.pieces},
+            config,
+            personas,
             "world_" + uuid4().hex,
         )
         state.update(
-            mode=body.mode,
+            mode=mode,
             error=None,
             scenario_hash=digest(
-                {"scenario": body.scenario.model_dump(), "rule_manifest": state["rule_manifest"]}
+                {"scenario": config.model_dump(), "rule_manifest": state["rule_manifest"]}
             ),
-            scenario=body.scenario.model_dump(),
+            scenario=config.model_dump(exclude_none=True),
             model_config_hash=digest(
                 {
                     "model": settings.model,
@@ -242,7 +262,21 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             ),
             prompt_hash=digest(SYSTEM_PROTOCOL),
         )
-        if body.mode == "live":
+        if frozen_source is not None:
+            if frozen_source.get("discipline") is not None:
+                state["discipline"] = frozen_source["discipline"]
+                state["discipline_hash"] = frozen_source["discipline_hash"]
+        if preset_source:
+            state["preset_source"] = preset_source
+        state["scenario_hash"] = digest(
+            {
+                "scenario": config.model_dump(),
+                "designs": personas,
+                "discipline_hash": state["discipline_hash"],
+                "rule_manifest": state["rule_manifest"],
+            }
+        )
+        if mode == "live":
             # Construction verifies configuration without spending an API call.
             # The first explicit run probes within that segment's call budget.
             app.state.runner.adapter(state)
@@ -264,6 +298,12 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             expected_generation=0,
         )
         return observer(state)
+
+    @app.post("/api/worlds", status_code=201)
+    async def world(body: CreateWorld):
+        return await materialize_world(body.scenario, resolve_designs(body.scenario), body.mode)
+
+    register_presets(app, materialize_world, reject_embedded_key)
 
     @app.get("/api/worlds")
     async def worlds():
@@ -309,8 +349,16 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
                 return record
             app.state.runner.pause(wid)
             new = copy.deepcopy(state["scenario"])
-            created = await world(
-                CreateWorld(scenario=Scenario.model_validate(new), mode=state["mode"])
+            designs = {
+                pid: private.get("initial_memory", private["persona"])
+                for pid, private in state["private"].items()
+            }
+            created = await materialize_world(
+                Scenario.model_validate(new),
+                designs,
+                state["mode"],
+                preset_source=state.get("preset_source"),
+                frozen_source=state,
             )
             app.state.store.finish_command(wid, body.command_id, "completed")
             return {

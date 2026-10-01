@@ -99,8 +99,9 @@ export default function App() {
       ]);
   }, [world]);
   useEffect(() => {
-    if (!selectedId && pieces[0]) setSelectedId(pieces[0].id);
-  }, [pieces, selectedId]);
+    const initialSelection = perspectiveId ? observation?.self : pieces[0];
+    if (!selectedId && initialSelection) setSelectedId(initialSelection.id);
+  }, [pieces, selectedId, perspectiveId, observation?.self]);
   useEffect(() => {
     if (!pendingCommand || pendingCommand.worldId !== worldId) return;
     let active = true;
@@ -603,7 +604,7 @@ export default function App() {
       </main>
       <footer className="app-footer">
         <span>
-          CHESSX <span className="mono">/ 0.1</span>
+          CHESSX <span className="mono">/ 0.2</span>
         </span>
         <span>事实可回放。记忆各自持有。故事从此生长。</span>
         <span className="mono">LOCAL EXPERIMENT</span>

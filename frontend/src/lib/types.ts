@@ -77,6 +77,42 @@ export type Health = {
 };
 export type ScenarioSummary = { id: string; title: string; description: string };
 export type Validation = { valid: boolean; errors: (string | RecordData)[] };
+export type PresetSummary = { id: string; title: string; description: string; readonly: boolean };
+export type CharacterInfo = {
+  id: string;
+  name: string;
+  type: string;
+  color: string;
+  position: Position;
+};
+export type CharacterSummary = CharacterInfo & { group_id: string; revision?: string };
+export type CharacterDocument = {
+  group_id: string;
+  character: CharacterInfo;
+  design_markdown: string;
+  revision: string;
+};
+export type CharacterReference = {
+  group_id: string;
+  character_id: string;
+  piece_id?: string;
+  position?: Position;
+};
+export type PresetScenario = RecordData & {
+  schema_version: string;
+  scenario_id: string;
+  title: string;
+  board: { rows: number; cols: number };
+  rule_profile: string;
+  characters: CharacterReference[];
+  objects: unknown[];
+  limits?: RecordData;
+};
+export type PresetDetail = PresetSummary & {
+  characters: CharacterSummary[];
+  scenario: PresetScenario;
+};
+export type ScenarioDocument = { scenario: PresetScenario; revision: string };
 export type CommandKind =
   'run' | 'pause' | 'resume' | 'step_event' | 'step_turn' | 'retry' | 'reset';
 export const values = <T>(value: Record<string, T> | T[] | undefined): T[] =>

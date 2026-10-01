@@ -2,11 +2,21 @@
 
 import json
 import re
+from hashlib import sha256
 from pathlib import Path
 
 from chessx.domain.errors import RuleError
 from chessx.domain.models import Scenario
 from chessx.domain.profile import RULE_MANIFEST_HASH, frozen_rule_manifest
+
+PROJECT_ROOT = Path(__file__).resolve().parents[3]
+DISCIPLINE_PATH = PROJECT_ROOT / "prompts" / "piece-discipline.md"
+
+
+def frozen_discipline() -> tuple[str, str]:
+    """Snapshot the tracked common instructions, never a character-controlled file."""
+    text = DISCIPLINE_PATH.read_text(encoding="utf-8")
+    return text, sha256(text.encode("utf-8")).hexdigest()
 
 
 def initial_goals(persona: str) -> str:
@@ -40,8 +50,20 @@ def initial_goals(persona: str) -> str:
     return "\n\n".join(sections)
 
 
-def load_scenario(path: str | Path) -> tuple[Scenario, dict[str, str]]:
+def load_scenario(
+    path: str | Path, *, persona_root: str | Path | None = None
+) -> tuple[Scenario, dict[str, str]]:
     path = Path(path).resolve()
+    # Bundled legacy scenario descriptors reference the canonical preset designs.
+    # Other imports remain confined to their own directory unless the caller
+    # deliberately supplies another trusted root. JSON cannot choose that root.
+    root = (
+        Path(persona_root).resolve()
+        if persona_root is not None
+        else PROJECT_ROOT / "presets"
+        if path.parent == PROJECT_ROOT / "scenarios"
+        else path.parent
+    )
     scenario = Scenario.model_validate(json.loads(path.read_text(encoding="utf-8")))
     personas: dict[str, str] = {}
     for piece in scenario.pieces:
@@ -53,8 +75,8 @@ def load_scenario(path: str | Path) -> tuple[Scenario, dict[str, str]]:
             raise RuleError(
                 "PERSONA_PATH_INVALID", "Persona files must stay within the scenario directory"
             )
-        resolved = (path.parent / relative).resolve()
-        if not resolved.is_relative_to(path.parent):
+        resolved = (root / relative).resolve()
+        if not resolved.is_relative_to(root):
             raise RuleError(
                 "PERSONA_PATH_INVALID", "Persona files must stay within the scenario directory"
             )
@@ -65,6 +87,7 @@ def load_scenario(path: str | Path) -> tuple[Scenario, dict[str, str]]:
 
 
 def create_world(scenario: Scenario, personas: dict[str, str], world_id: str) -> dict:
+    discipline, discipline_hash = frozen_discipline()
     return {
         "world_id": world_id,
         "scenario_id": scenario.scenario_id,
@@ -73,6 +96,8 @@ def create_world(scenario: Scenario, personas: dict[str, str], world_id: str) ->
         "rule_profile": "demo-v2.1",
         "rule_manifest": frozen_rule_manifest(),
         "rule_manifest_hash": RULE_MANIFEST_HASH,
+        "discipline": discipline,
+        "discipline_hash": discipline_hash,
         "board": scenario.board.model_dump(),
         "limits": scenario.limits.model_dump(),
         "actor_order": [piece.id for piece in scenario.pieces],
@@ -102,6 +127,7 @@ def create_world(scenario: Scenario, personas: dict[str, str], world_id: str) ->
         "private": {
             piece.id: {
                 "persona": personas.get(piece.id, piece.private_text or ""),
+                "initial_memory": personas.get(piece.id, piece.private_text or ""),
                 "memory": "",
                 "goals": initial_goals(personas.get(piece.id, piece.private_text or "")),
                 "memory_version": 0,

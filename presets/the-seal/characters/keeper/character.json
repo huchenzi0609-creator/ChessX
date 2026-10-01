@@ -1,0 +1,10 @@
+{
+  "id": "keeper",
+  "name": "守桥人",
+  "type": "rook",
+  "color": "青",
+  "position": {
+    "row": 3,
+    "col": 1
+  }
+}

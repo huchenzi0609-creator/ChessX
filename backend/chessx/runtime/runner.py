@@ -281,6 +281,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             adapter.counter,
             max_output_tokens=maximum,
             model_capacity=self.settings.context_capacity,
+            input_limit=self.settings.character_input_limit if pid is not None else None,
         )
         if isinstance(adapter, ProviderAdapter) and not adapter._probed:
             await self.ensure_probe(state, adapter)
@@ -297,6 +298,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 adapter.counter,
                 max_output_tokens=maximum,
                 model_capacity=self.settings.context_capacity,
+                input_limit=self.settings.character_input_limit if pid is not None else None,
             )
             estimated = request_input_tokens(stage, context, schema, adapter.counter)
             if (

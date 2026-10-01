@@ -1,0 +1,10 @@
+{
+  "id": "witness",
+  "name": "见证者",
+  "type": "king",
+  "color": "白",
+  "position": {
+    "row": 4,
+    "col": 2
+  }
+}

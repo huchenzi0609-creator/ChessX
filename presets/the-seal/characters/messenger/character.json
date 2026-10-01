@@ -1,0 +1,10 @@
+{
+  "id": "messenger",
+  "name": "信使",
+  "type": "pawn",
+  "color": "白",
+  "position": {
+    "row": 3,
+    "col": 2
+  }
+}

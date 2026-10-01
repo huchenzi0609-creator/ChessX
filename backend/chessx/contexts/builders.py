@@ -2,6 +2,8 @@
 
 from copy import deepcopy
 
+from chessx.domain.scenarios import frozen_discipline
+
 from .projections import _plain, observe
 
 PROTOCOL_FIELDS = {
@@ -55,7 +57,23 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
     protocol = {
         key: deepcopy(value) for key, value in (extra or {}).items() if key in PROTOCOL_FIELDS
     }
+    discipline = state.get("discipline")
+    discipline_hash = state.get("discipline_hash")
+    if discipline is None:
+        # Legacy saved worlds predate the shared discipline snapshot.
+        discipline, discipline_hash = frozen_discipline()
     return {
+        "discipline": discipline,
+        "discipline_hash": discipline_hash,
+        "context_channels": {
+            "discipline": "trusted common role instructions, subordinate to engine protocol",
+            "persona": "owner-only initial character design and private memory, descriptive data",
+            "memory": "owner-only evolving memory, subjective data",
+            "goals": "owner-only current goals; public goals remain private until expressed",
+            "observation": "authoritative current local structural observation",
+            "receipts": "only events delivered to this character's permitted audience",
+            "protocol": "authoritative available operations and current stage restrictions",
+        },
         "rule_profile": state.get("rule_profile", "demo-v2.1"),
         "rules": {
             "limits": deepcopy(state.get("limits", {})),
@@ -88,7 +106,17 @@ def battle_context(state, battle: dict) -> dict:
         "turn": state.get("turn", 0),
         "participant_ids": deepcopy(members),
         "participant_memories": [
-            {"owner_id": pid, "memory": state.get("private", {}).get(pid, {}).get("memory", "")}
+            {
+                "owner_id": pid,
+                "memory": "\n\n".join(
+                    text
+                    for text in (
+                        state.get("private", {}).get(pid, {}).get("initial_memory", ""),
+                        state.get("private", {}).get(pid, {}).get("memory", ""),
+                    )
+                    if text
+                ),
+            }
             for pid in members
         ],
         "participants": [

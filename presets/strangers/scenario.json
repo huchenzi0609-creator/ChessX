@@ -1,0 +1,42 @@
+{
+  "schema_version": "2.1",
+  "scenario_id": "strangers",
+  "title": "四个陌生人",
+  "board": {
+    "rows": 8,
+    "cols": 8
+  },
+  "rule_profile": "demo-v2.1",
+  "objects": [
+    {
+      "id": "letter",
+      "name": "未署名的信",
+      "description": "一张没有署名的纸，字迹已褪色。",
+      "location": {
+        "kind": "ground",
+        "position": {
+          "row": 3,
+          "col": 3
+        }
+      }
+    }
+  ],
+  "characters": [
+    {
+      "group_id": "strangers",
+      "character_id": "archivist"
+    },
+    {
+      "group_id": "strangers",
+      "character_id": "traveler"
+    },
+    {
+      "group_id": "strangers",
+      "character_id": "witness"
+    },
+    {
+      "group_id": "strangers",
+      "character_id": "dissenter"
+    }
+  ]
+}

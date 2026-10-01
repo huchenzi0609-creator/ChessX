@@ -1,0 +1,10 @@
+{
+  "id": "traveler",
+  "name": "旅人",
+  "type": "knight",
+  "color": "朱",
+  "position": {
+    "row": 3,
+    "col": 3
+  }
+}
