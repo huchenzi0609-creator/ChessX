@@ -3,6 +3,7 @@
 from copy import deepcopy
 
 from chessx.contexts.budgets import fit_context
+from chessx.contexts.extractive import extractive_compaction
 from chessx.contexts.memory import NOISE, compact_receipt, entry_context
 from chessx.domain.errors import RuleError
 from chessx.llm import ModelError
@@ -19,7 +20,12 @@ class CompactionMixin:
             if not state["pieces"][pid]["alive"]:
                 continue
             receipts = state["receipts"][pid]
-            watermark = state["private"][pid].get("compaction_watermark", 0)
+            watermark = state["private"][pid].get(
+                "extractive_watermark"
+                if self.settings.memory_compaction_mode == "extractive"
+                else "compaction_watermark",
+                0,
+            )
             if len(receipts) - watermark > 30:
                 return await self.compact_owner(state, pid, len(receipts) - 12)
         return None
@@ -60,6 +66,8 @@ class CompactionMixin:
     async def compact_owner(
         self, state, pid, target_end, *, reflect_goals=False, _retry=0, _feedback=None
     ):
+        if self.settings.memory_compaction_mode == "extractive":
+            return self.compact_extractively(state, pid, target_end)
         own = state["private"][pid]
         start = own.get("compaction_watermark", 0)
         if target_end <= start:
@@ -249,7 +257,146 @@ class CompactionMixin:
             )
         return events
 
+    def compact_extractively(self, state, pid, target_end):
+        """Index received evidence, without a model operation or goal decision."""
+        from chessx.llm.validation import TokenCounter
+
+        own = state["private"][pid]
+        start = own.get("extractive_watermark", 0)
+        if target_end <= start:
+            return []
+        end, semantic = start, 0
+        while end < target_end and semantic < 128:
+            semantic += state["receipts"][pid][end].get("channel") not in NOISE
+            end += 1
+        encoding = "cl100k_base" if state["mode"] == "fixture" else self.settings.tokenizer_name
+        counters = self.__dict__.setdefault("_maintenance_counters", {})
+        if encoding not in counters:
+            counters[encoding] = TokenCounter(encoding)
+        counter = counters[encoding]
+        result = extractive_compaction(state, pid, start, end, counter)
+        ledger = own.setdefault("long_term_memory", {})
+        for entry in result["additions"]:
+            entry["learned_turn"] = (
+                entry["learned_turn"] if isinstance(entry["learned_turn"], int) else state["turn"]
+            )
+            ledger[entry["id"]] = entry
+        own["rolling_summary"] = result["summary"]
+        own["compaction_provenance"] = "extractive_receipts_v1"
+        own["compaction_watermark"] = own["memory_watermark"] = end
+        own["extractive_watermark"] = end
+        own["compaction_version"] = own.get("compaction_version", 0) + 1
+        # Subjective memory, goals, LLM result and usage remain unchanged.
+        return [
+            {
+                "type": "MemoryCompactionAdvanced",
+                "actor_id": pid,
+                "payload": {
+                    "covered_start": start,
+                    "covered_end": end,
+                    "durable_entries": len(ledger),
+                    "method": "extractive_receipts_v1",
+                    "version": own["compaction_version"],
+                },
+                "audience": [],
+            }
+        ]
+
+    async def reflect_owner(self, state, pid):
+        from chessx.contexts import build_context
+
+        own = state["private"][pid]
+        context = build_context(
+            state,
+            pid,
+            "memory",
+            {
+                "instruction": "Reflect on your own subjective memory and textual goals from supplied evidence. The extractive index records what was received, not beliefs or verified reports. Preserve uncertainty and do not copy the whole archive. Missing information alone cannot make goals impossible. Cite only receipt IDs supplied in this context."
+            },
+        )
+        context = fit_context(
+            "memory",
+            context,
+            schemas.MEMORY,
+            self.adapter(state).counter,
+            max_output_tokens=1024,
+            model_capacity=self.settings.context_capacity,
+            input_limit=self.settings.character_input_limit,
+        )
+        ids = set()
+
+        def collect(value):
+            if isinstance(value, dict):
+                if isinstance(value.get("receipt_id"), str):
+                    ids.add(value["receipt_id"])
+                ids.update(value.get("source_receipt_ids", []))
+                for item in value.values():
+                    collect(item)
+            elif isinstance(value, list):
+                for item in value:
+                    collect(item)
+
+        collect(context)
+
+        def validate(result):
+            if not set(result["source_receipt_ids"]).issubset(ids):
+                raise RuleError(
+                    "MEMORY_SOURCE_INVALID", "Reflection requires supplied owner evidence"
+                )
+            if result["goal_decision"] == "replace" and result["goal_status"] not in {
+                "achieved",
+                "impossible",
+            }:
+                raise RuleError(
+                    "GOAL_REPLACEMENT_INVALID",
+                    "Goal replacement requires achieved or impossible status",
+                )
+
+        result = await self.ask(
+            state,
+            pid,
+            "memory",
+            f"turn:{state['turn']}:reflection:{pid}",
+            schemas.MEMORY,
+            {},
+            context=context,
+            validator=validate,
+        )
+        own["memory"] = result["memory"]
+        own["memory_version"] += 1
+        own["last_reflection_turn"] = state["turn"]
+        own["reflection_watermark"] = len(state["receipts"][pid])
+        events = [
+            {
+                "type": "MemoryUpdated",
+                "actor_id": pid,
+                "payload": {
+                    "version": own["memory_version"],
+                    "source_receipt_ids": result["source_receipt_ids"],
+                },
+                "audience": [pid],
+            }
+        ]
+        if result["goal_decision"] != "keep":
+            own["goals"] = result["goals_markdown"]
+            own["goal_version"] += 1
+            events.append(
+                {
+                    "type": "GoalUpdated",
+                    "actor_id": pid,
+                    "payload": {
+                        "version": own["goal_version"],
+                        "decision": result["goal_decision"],
+                        "reason_summary": result["reason_summary"],
+                    },
+                    "audience": [pid],
+                }
+            )
+        return events
+
     async def memory_step(self, state):
+        if self.settings.memory_compaction_mode == "extractive":
+            return await self.extractive_memory_step(state)
         index = state["cursor"]["actor_index"]
         if index >= len(state["actor_order"]):
             state["phase"], state["cursor"] = "END", {}
@@ -286,4 +433,37 @@ class CompactionMixin:
             return events
         state["cursor"].pop("compaction_target_end", None)
         state["cursor"]["actor_index"] += 1
+        return []
+
+    async def extractive_memory_step(self, state):
+        cursor = state["cursor"]
+        index = cursor["actor_index"]
+        if index >= len(state["actor_order"]):
+            state["phase"], state["cursor"] = "END", {}
+            return []
+        pid = state["actor_order"][index]
+        own = state["private"][pid]
+        if not state["pieces"][pid]["alive"]:
+            cursor["actor_index"] += 1
+            return []
+        n = len(state["receipts"][pid])
+        target = cursor.get("compaction_target_end", n)
+        start = own.get("extractive_watermark", 0)
+        if start < target:
+            cursor["compaction_target_end"] = target
+            return self.compact_extractively(state, pid, target)
+        cursor.pop("compaction_target_end", None)
+        relevant = state["receipts"][pid][own.get("reflection_watermark", 0) :]
+        critical = any(
+            r.get("channel")
+            in {"DeathCommitted", "BattleClosed", "ConversationClosed", "LoserReleased"}
+            for r in relevant
+        )
+        if own.get("last_reflection_turn") != state["turn"] and (
+            critical or state["turn"] % 5 == 0
+        ):
+            events = await self.reflect_owner(state, pid)
+            cursor["actor_index"] += 1
+            return events
+        cursor["actor_index"] += 1
         return []

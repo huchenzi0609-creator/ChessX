@@ -120,7 +120,7 @@ async def test_memory_retry_delivers_actionable_feedback_and_never_advances_on_f
     )
     store = Store(tmp_path / "recovery.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
     contexts = []
 
     class RecoveringAdapter(FixtureAdapter):

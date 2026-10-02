@@ -86,7 +86,7 @@ async def test_oldest_prefix_is_compacted_before_decision_and_only_covered_prefi
     state["private"]["a"]["memory_watermark"] = 100  # legacy watermark was unreliable
     store = Store(tmp_path / "covered.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
     requests = []
 
     class Recording(FixtureAdapter):
@@ -119,7 +119,7 @@ async def test_failed_compaction_preserves_summary_ledger_watermark_and_cursor(t
     )
     store = Store(tmp_path / "failure.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
 
     class Failed(FixtureAdapter):
         async def generate(self, *args, **kwargs):
@@ -146,7 +146,7 @@ async def test_cancelled_compaction_cannot_commit_after_generation_changes(tmp_p
     state["receipts"]["a"] = [receipt(i) for i in range(40)]
     store = Store(tmp_path / "cancel.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
     entered, release = asyncio.Event(), asyncio.Event()
 
     class Slow(FixtureAdapter):
@@ -174,7 +174,7 @@ async def test_durable_heard_news_survives_later_summary_omission_and_reload(tmp
     state["receipts"]["a"] = [receipt(1, "The messenger said the old king died.")]
     store = Store(tmp_path / "durable.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
 
     class Remember(FixtureAdapter):
         async def generate(self, stage, context, schema, **kwargs):
@@ -225,7 +225,7 @@ async def test_sources_cannot_escape_supplied_batch_or_turn_speech_into_world_tr
     state["receipts"]["a"] = [receipt(1, "A speaker makes an unverified claim.")]
     store = Store(tmp_path / "sources.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
 
     class Invalid(FixtureAdapter):
         async def generate(self, *args, **kwargs):
@@ -271,7 +271,9 @@ async def test_multiple_batches_cover_every_semantic_source_once_without_clock_a
     state["receipts"]["a"] = [receipt(i) for i in range(1, 121)]
     store = Store(tmp_path / "complete.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_batch_size=32))
+    runner = WorldRunner(
+        store, Settings(data_dir=tmp_path, memory_batch_size=32, memory_compaction_mode="llm")
+    )
     covered = []
 
     class Recording(FixtureAdapter):
@@ -309,7 +311,7 @@ def test_prompt_provenance_is_bounded_but_complete_durable_sources_are_untouched
     assert remembered["source_count"] == 1000 and len(remembered["source_receipt_ids"]) == 4
     store = Store(tmp_path / "bounded.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
     preserved = runner.compaction_input(state, "a", 0, 0)["retained_important_facts"][0]
     assert preserved["source_count"] == 1000 and len(preserved["source_receipt_ids"]) == 4
     assert state == before
@@ -373,7 +375,9 @@ async def test_reasoning_failure_splits_unacknowledged_prefix_and_remembers_succ
     state["receipts"]["a"] = [receipt(i) for i in range(1, 41)]
     store = Store(tmp_path / "adaptive.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_batch_size=32))
+    runner = WorldRunner(
+        store, Settings(data_dir=tmp_path, memory_batch_size=32, memory_compaction_mode="llm")
+    )
     sizes = []
 
     class SmallOnly(FixtureAdapter):
@@ -404,7 +408,7 @@ def test_legacy_end_of_history_summary_does_not_seed_the_oldest_prefix(tmp_path)
     state["receipts"]["a"] = [receipt(1)]
     store = Store(tmp_path / "chronology.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
     assert runner.compaction_input(state, "a", 0, 1)["previous_summary"] == ""
     assert state["private"]["a"]["memory"] == "Knowledge from much later events."
     store.close()
@@ -416,7 +420,7 @@ async def test_scheduled_final_batch_can_reflect_goals_but_maintenance_cannot(tm
     state["receipts"]["a"] = [receipt(1)]
     store = Store(tmp_path / "goals.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
 
     class Reflect(FixtureAdapter):
         async def generate(self, stage, context, schema, **kwargs):
@@ -451,7 +455,7 @@ async def test_default_fixture_can_execute_pressure_compaction_without_goal_side
     state["receipts"]["a"] = [receipt(i) for i in range(1, 41)]
     store = Store(tmp_path / "fixture-pressure.sqlite3")
     store.create(state)
-    runner = WorldRunner(store, Settings(data_dir=tmp_path))
+    runner = WorldRunner(store, Settings(data_dir=tmp_path, memory_compaction_mode="llm"))
     current = await runner.step(state["world_id"])
     assert not current.get("error")
     assert current["private"]["a"]["compaction_watermark"] > 0

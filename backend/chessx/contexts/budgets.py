@@ -67,6 +67,11 @@ def fit_context(
         )
 
     while not fits():
+        evidence = fitted.get("evidence_index", {})
+        lines = evidence.get("summary_lines") if isinstance(evidence, dict) else None
+        if isinstance(lines, list) and len(lines) > 1:
+            lines.pop(1)
+            continue
         retained = fitted.get("retained_important_facts")
         if stage == "memory_compaction" and isinstance(retained, list) and len(retained) > 1:
             retained.pop(0)

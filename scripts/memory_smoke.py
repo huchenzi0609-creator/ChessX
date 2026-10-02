@@ -25,6 +25,8 @@ from chessx.storage.store import digest
 
 async def main(world_id=None, owner_id="oedipus", max_calls=3, prefix_receipts=40):
     settings = Settings.load()
+    # This opt-in diagnostic deliberately exercises the optional LLM editor.
+    settings = settings.model_copy(update={"memory_compaction_mode": "llm"})
     source = sqlite3.connect(f"file:{settings.data_dir / 'chessx.sqlite3'}?mode=ro", uri=True)
     source.row_factory = sqlite3.Row
     if world_id:

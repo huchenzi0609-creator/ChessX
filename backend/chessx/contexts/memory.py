@@ -86,10 +86,25 @@ def entry_context(entry):
     """Keep a bounded provenance sample in prompts; full sources stay durable."""
     value = {
         key: deepcopy(entry[key])
-        for key in ("id", "owner_id", "text", "kind", "salience", "learned_turn")
+        for key in (
+            "id",
+            "owner_id",
+            "text",
+            "kind",
+            "salience",
+            "learned_turn",
+            "speaker_id",
+            "speaker_name",
+            "source_event_id",
+        )
         if key in entry
     }
     sources = entry.get("source_receipt_ids", [])
+    if len(value.get("text", "")) > 1200:
+        value["text"] = (
+            "Full evidence in the supplied source archive; no partial quote is presented."
+        )
+        value["full_text_in_archive"] = True
     value["source_receipt_ids"] = list(dict.fromkeys(sources[:1] + sources[-3:]))
     value["source_count"] = len(sources)
     return value
@@ -128,7 +143,7 @@ def recall(state, pid, extra=None, limit=6):
         key=lambda e: (
             -len(terms(e.get("text", "")) & query_terms),
             e.get("salience") != "important",
-            -e.get("learned_turn", 0),
+            -(e.get("learned_turn") or 0),
         ),
     )[:8]
     return {

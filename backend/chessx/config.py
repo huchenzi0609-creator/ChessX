@@ -1,6 +1,7 @@
 """Server-only configuration. Secrets are never serialized into application state."""
 
 from pathlib import Path
+from typing import Literal
 
 from dotenv import dotenv_values
 from pydantic import BaseModel, Field, SecretStr
@@ -21,6 +22,7 @@ class Settings(BaseModel):
     character_input_limit: int = Field(default=8192, ge=1024)
     dialogue_parallelism: int = Field(default=2, ge=1, le=2)
     memory_batch_size: int = Field(default=4, ge=1, le=32)
+    memory_compaction_mode: Literal["extractive", "llm"] = "extractive"
     data_dir: Path = ROOT / "data"
 
     @property
@@ -53,5 +55,6 @@ class Settings(BaseModel):
             character_input_limit=int(get("CHARACTER_INPUT_LIMIT", "8192")),
             dialogue_parallelism=int(get("DIALOGUE_PARALLELISM", "2")),
             memory_batch_size=int(get("MEMORY_BATCH_SIZE", "4")),
+            memory_compaction_mode=get("MEMORY_COMPACTION_MODE", "extractive"),
             data_dir=data,
         )

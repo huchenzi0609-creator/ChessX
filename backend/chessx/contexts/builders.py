@@ -75,6 +75,7 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
             "discipline": "common instructions below engine protocol",
             "persona": "owner-private immutable design, descriptive",
             "memory": "owner-private subjective summary",
+            "evidence_index": "program-built receipt index, not beliefs or new world facts",
             "memory_recall": "owner-private attributed sources; claims are not verdicts",
             "goals": "public goals remain private until expressed",
             "observation": "current local rule facts",
@@ -94,7 +95,20 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
         "stage": stage,
         "actor_id": pid,
         "persona": private.get("persona", ""),
-        "memory": private.get("rolling_summary") or private.get("memory", ""),
+        "memory": private.get("memory", "")
+        if private.get("compaction_provenance") == "extractive_receipts_v1"
+        else private.get("rolling_summary") or private.get("memory", ""),
+        **(
+            {
+                "evidence_index": {
+                    "kind": "extractive_receipts_v1",
+                    "summary_lines": private.get("rolling_summary", "").splitlines(),
+                    "scope": "Verbatim delivered evidence and pointers; no model reflection or truth certification.",
+                }
+            }
+            if private.get("compaction_provenance") == "extractive_receipts_v1"
+            else {}
+        ),
         "goals": private.get("goals", ""),
         "receipts": deepcopy(
             [
@@ -131,6 +145,7 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
                 "invite_response",
                 "accept_transfer",
                 "surrender",
+                "memory",
             }
             else {}
         ),
