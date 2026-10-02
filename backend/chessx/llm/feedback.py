@@ -1,7 +1,16 @@
 """Shared, sanitized validation feedback for serial and speculative requests."""
 
 
-def validation_feedback(code: str, details: dict, maximum: int) -> dict:
+def validation_feedback(
+    code: str, details: dict, maximum: int, *, stage: str | None = None
+) -> dict:
+    if stage == "bard":
+        return {
+            "code": code,
+            "details": details,
+            "combined_output_token_allowance": maximum + 1000,
+            "instruction": "Correct the indicated failure using the same supplied sources. Bard reasoning has no fixed length limit; use the request's combined output allowance and retain enough room for complete schema JSON. Expose reasoning separately, never in story prose. Cite only original supplied event IDs. Do not alter world facts or invent missing information.",
+        }
     instruction = (
         "Correct the indicated failure and return one complete JSON object with ONLY the supplied schema fields. "
         "Shorten text to fit the ENTIRE formal output budget; keep exposed reasoning well below 1000 tokens. "

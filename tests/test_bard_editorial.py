@@ -5,7 +5,9 @@ from copy import deepcopy
 from pathlib import Path
 
 import httpx
-from chessx.llm import ProviderAdapter, provider
+import pytest
+from chessx.llm import ModelError, ProviderAdapter, provider
+from chessx.llm.feedback import validation_feedback
 from chessx.runtime import schemas
 from chessx.storage.store import digest
 
@@ -96,3 +98,63 @@ async def test_bard_can_merge_significant_events_and_omit_uneventful_wait():
     assert sent[0]["max_tokens"] == 9192
     assert provider.BARD_DISCIPLINE in sent[0]["messages"][0]["content"]
     assert result.content["paragraphs"][0]["event_refs"] == ["world:1", "world:3"]
+
+
+async def test_bard_accepts_long_exposed_reasoning_but_piece_still_rejects_it():
+    trace = "synthetic reasoning " * 1100
+
+    def handle(request):
+        stage = json.loads(request.content)["messages"][-1]["content"]
+        content = (
+            {
+                "title": "Story",
+                "paragraphs": [
+                    {
+                        "text": "An event was remembered.",
+                        "event_refs": ["world:1"],
+                        "claim_kind": "event_based",
+                    }
+                ],
+            }
+            if '"stage": "bard"' in stage
+            else {"kind": "wait"}
+        )
+        return httpx.Response(
+            200,
+            json={
+                "choices": [
+                    {
+                        "finish_reason": "stop",
+                        "message": {"content": json.dumps(content), "reasoning_content": trace},
+                    }
+                ]
+            },
+        )
+
+    adapter = ProviderAdapter(
+        "https://provider.invalid/v1",
+        "SYNTHETIC_BARD_AUTH_KEY",
+        "fixture-model",
+        tokenizer_agreement=True,
+        transport=httpx.MockTransport(handle),
+    )
+    adapter._probed = True
+    result = await adapter.generate(
+        "bard", {"events": [{"id": "world:1"}]}, schemas.BARD, max_output_tokens=8192
+    )
+    assert result.reasoning == trace and result.reasoning_tokens > 1000
+    with pytest.raises(ModelError) as error:
+        await adapter.generate("action", {}, schemas.ACTION, max_output_tokens=512)
+    assert error.value.code == "COT_BUDGET_EXCEEDED"
+
+
+def test_bard_prompt_and_retry_feedback_do_not_reintroduce_piece_cot_cap():
+    prompt = provider.compose_messages("bard", {}, schemas.BARD)[0]["content"]
+    assert "Keep exposed reasoning at most 1000 tokens" not in prompt
+    assert "no fixed 1000-token limit" in prompt
+    feedback = validation_feedback("MODEL_OUTPUT_INVALID", {}, 8000, stage="bard")
+    assert (
+        "1000 tokens" not in feedback["instruction"] and "250 tokens" not in feedback["instruction"]
+    )
+    assert feedback["combined_output_token_allowance"] == 9000
+    assert "formal_output_token_limit" not in feedback

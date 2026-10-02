@@ -407,6 +407,7 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
                         "prompt_manifest_hash": self.prompt_manifest_hash,
                         "character_behavior_version": CHARACTER_BEHAVIOR_VERSION,
                         "requested_max_tokens": maximum + 1000,
+                        "reasoning_token_limit": None if stage == "bard" else 1000,
                     },
                 )
                 return result.content
@@ -423,7 +424,7 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
                 details = error.details if isinstance(error, ModelError) else {}
                 self.store.fail_operation(wid, slot, attempt, code, details=details)
                 context.setdefault("protocol", {})["validation_feedback"] = validation_feedback(
-                    code, details, maximum
+                    code, details, maximum, stage=stage
                 )
                 if code in {
                     # Transport/capability failures pause rather than spending on retries.

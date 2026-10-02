@@ -96,17 +96,23 @@ def extract_response(message: dict, *, probe: bool = False) -> tuple[str, str]:
 
 
 def validate_output(
-    content: str, reasoning: str, schema: dict, counter: TokenCounter, max_output_tokens: int | None
+    content: str,
+    reasoning: str,
+    schema: dict,
+    counter: TokenCounter,
+    max_output_tokens: int | None,
+    *,
+    max_reasoning_tokens: int | None = 1000,
 ) -> dict:
     reasoning_tokens = counter.count(reasoning)
-    if reasoning_tokens > 1000:
+    if max_reasoning_tokens is not None and reasoning_tokens > max_reasoning_tokens:
         raise ModelError(
             "COT_BUDGET_EXCEEDED",
-            "Exposed reasoning exceeds the 1000-token limit.",
+            "Exposed reasoning exceeds its configured token limit.",
             details={
                 "reason": "REASONING_BUDGET_EXCEEDED",
                 "actual_tokens": reasoning_tokens,
-                "limit": 1000,
+                "limit": max_reasoning_tokens,
             },
         )
     formal_tokens = counter.count(content)

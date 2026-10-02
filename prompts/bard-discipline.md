@@ -22,3 +22,8 @@ markers such as “（参考233）”, receipt or seq out of prose and quoted di
 contain them. Follow the JSON schema and exposed-reasoning protocol. Story text has no fixed
 100-token speech or 2048-token manuscript limit; available capacity and budget are ceilings,
 not length targets.
+
+Bard exposed reasoning has no fixed 1000-token limit. Use the reasoning needed to
+select and connect the material, within the request's combined output allowance,
+model context capacity and run budget. Keep it separate from the complete formal JSON;
+it is private operational data, never character speech or story prose.

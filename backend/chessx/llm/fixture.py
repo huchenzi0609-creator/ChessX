@@ -26,7 +26,14 @@ class FixtureAdapter:
             content = self._choose(stage, context)
         reasoning = f"Fixture trace: deterministic engineering response for stage {stage}; this is not AI reasoning."
         raw = json.dumps(content, ensure_ascii=False)
-        validated = validate_output(raw, reasoning, schema, self.counter, max_output_tokens)
+        validated = validate_output(
+            raw,
+            reasoning,
+            schema,
+            self.counter,
+            None if stage == "bard" else max_output_tokens,
+            max_reasoning_tokens=None if stage == "bard" else 1000,
+        )
         return ModelResult(
             validated,
             reasoning,

@@ -39,6 +39,7 @@ CHESSX_TOKENIZER_AGREEMENT=false
 - MODEL_REQUEST_INVALID：HTTP 400／422，检查服务参数兼容性；不自动重复同一请求。
 - MODEL_OUTPUT_INVALID：查看本地错误的 `details.reason`；区分 `FORMAL_BUDGET_EXCEEDED`（actual_tokens／limit）、`RESPONSE_TRUNCATED`、`JSON_INVALID`、`SCHEMA_MISMATCH`。重试自动把该安全诊断与阶段预算送回模型，不需要重启或重置世界。
 - COT_BUDGET_EXCEEDED：`details`列出推理token数／上限；自动带约250 token简短推理反馈补试，CoT错误独立最多3次额外重试，不被之前的格式重试用尽。多人候选都超限时转为单路补试。所有补试仍受本段预算约束，不能截断推理冒充合法结果。
+- 上述CoT长度限制适用于棋子与其他受限阶段；吟游诗人按2026-10-02补充要求解除固定1000 token推理上限，仍须返回公开推理和完整成稿，受请求合计输出、模型容量、调用与时间预算约束。
 
 不要粘贴完整上游日志排错，只报告错误代码。密钥疑似进入任何公开位置时在服务端撤销重发，不把原密钥再发送给协作者。
 
