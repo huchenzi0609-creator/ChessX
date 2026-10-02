@@ -1196,3 +1196,59 @@ main {
   margin-top: 20px;
   font-size: 11px;
 }
+
+.conversation-sort-note {
+  padding: 12px 20px;
+  color: #7a888a;
+  font-size: 11px;
+  border-bottom: 1px solid var(--line);
+}
+.conversation-heading {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.conversation-status {
+  font-size: 11px;
+  color: #7a888a;
+}
+.conversation-status.active {
+  color: #426b58;
+  font-weight: 600;
+}
+.dialog-active {
+  background: #f1f5ed;
+  border-left: 3px solid #708f75;
+}
+.dialog-card .conversation-id {
+  font-size: 10px;
+  margin: -7px 0 14px;
+  overflow-wrap: anywhere;
+}
+.dialog-line strong {
+  min-width: 48px;
+  max-width: 95px;
+  flex-shrink: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+.dialog-line span {
+  overflow-wrap: anywhere;
+}
+.event-actor {
+  font-size: 11px;
+  margin: 8px 0 0 12px;
+  color: #687c81;
+}
+.event-path {
+  font-size: 12px;
+  margin: 8px 0 0 12px;
+  overflow-wrap: anywhere;
+}
+.event-path span {
+  font-size: 10px;
+  color: #7a888a;
+}

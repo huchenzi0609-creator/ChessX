@@ -84,11 +84,31 @@ describe('observatory information isolation', () => {
     await screen.findByText('全局发言哨兵');
     fireEvent.change(screen.getByLabelText('观测视角'), { target: { value: 'piece:a' } });
     expect(screen.queryByText('全局发言哨兵')).not.toBeInTheDocument();
-    await screen.findByText(/本人可见收件/);
+    await screen.findByText('本人可见收件', { selector: '.event-speech' });
     expect(screen.queryByRole('tab', { name: '战斗' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /盲区人物哨兵/ })).not.toBeInTheDocument();
     expect(api.inspection).not.toHaveBeenCalled();
     expect(screen.getByText('工程固定响应 · 非 AI')).toBeInTheDocument();
+  });
+  it('does not resolve a receipt speaker through the observer roster outside role visibility', async () => {
+    const perspective = await api.perspective('w1', 'a');
+    vi.mocked(api.perspective).mockResolvedValue({
+      ...perspective,
+      receipts: [
+        {
+          event_id: 'r1',
+          type: 'ConversationMessage',
+          turn: 1,
+          payload: { speaker_id: 'b', speech: '投影台词' },
+        },
+      ],
+    });
+    render(<App />);
+    await screen.findByText('全局发言哨兵');
+    fireEvent.change(screen.getByLabelText('观测视角'), { target: { value: 'piece:a' } });
+    await screen.findByText('投影台词');
+    expect(document.querySelector('.event-actor strong')).toHaveTextContent('b');
+    expect(document.querySelector('.event-actor')).not.toHaveTextContent('盲区人物哨兵');
   });
   it('loads research records only after the research view and explicit expansion', async () => {
     vi.mocked(api.inspection).mockResolvedValue({ reasoning: '授权私密推理' });

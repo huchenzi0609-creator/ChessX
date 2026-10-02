@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import Board from './components/Board';
+import Conversations from './components/Conversations';
 import Inspector from './components/Inspector';
 import ScenarioEditor from './components/ScenarioEditor';
 import Stories from './components/Stories';
@@ -204,6 +205,10 @@ export default function App() {
   const runState = metadata?.lifecycle ?? 'READY';
   const visibleEvents = perspectiveId ? undefined : events;
   const dialogs = values(world?.conversations);
+  const visibleNames = Object.fromEntries(
+    pieces.map((piece) => [piece.id, piece.name ?? piece.id]),
+  );
+  const visibleTypes = Object.fromEntries(pieces.map((piece) => [piece.id, piece.type ?? '']));
   const battles = values(world?.battles);
   return (
     <div className="app-shell">
@@ -507,53 +512,22 @@ export default function App() {
                 >
                   {tab === 'events' && (
                     <Timeline
+                      names={visibleNames}
+                      pieceTypes={visibleTypes}
                       events={visibleEvents}
                       receipts={perspectiveId ? (perspective?.receipts ?? []) : undefined}
                       highlightedEvent={highlightedEvent}
                       onEvent={setHighlightedEvent}
                     />
                   )}
-                  {!perspectiveId &&
-                    tab === 'conversations' &&
-                    (dialogs.length ? (
-                      dialogs.map((dialog, index) => (
-                        <article
-                          className="dialog-card"
-                          key={String(dialog.conversation_id ?? dialog.id ?? index)}
-                        >
-                          <span className="eyebrow">
-                            {asText(dialog.kind ?? '会话')} · {asText(dialog.status ?? 'active')}
-                          </span>
-                          <h3>
-                            {asText(
-                              dialog.member_ids ??
-                                dialog.participant_ids ??
-                                dialog.participants ??
-                                dialog.id,
-                            )}
-                          </h3>
-                          {values(
-                            dialog.messages as
-                              | Record<string, Record<string, unknown>>
-                              | Record<string, unknown>[]
-                              | undefined,
-                          ).map((message, idx) => (
-                            <p className="dialog-line" key={String(message.message_id ?? idx)}>
-                              <strong>
-                                {asText(message.speaker_id ?? message.actor_id ?? message.speaker)}
-                              </strong>
-                              {asText(message.speech ?? message.text ?? message.content)}
-                            </p>
-                          ))}
-                          <details>
-                            <summary>会话结构</summary>
-                            <pre>{asText(dialog)}</pre>
-                          </details>
-                        </article>
-                      ))
-                    ) : (
-                      <Empty>角色接触后，会话将在这里留下逐句记录。</Empty>
-                    ))}
+                  {!perspectiveId && tab === 'conversations' && (
+                    <Conversations
+                      conversations={dialogs}
+                      currentTurn={world?.turn ?? 0}
+                      names={visibleNames}
+                      events={visibleEvents}
+                    />
+                  )}
                   {!perspectiveId &&
                     tab === 'battles' &&
                     (battles.length ? (

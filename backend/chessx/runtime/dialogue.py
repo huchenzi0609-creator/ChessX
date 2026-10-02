@@ -41,7 +41,13 @@ class DialogueMixin:
         for pid in audience:
             if state["pieces"][pid].get("conversation_id") == conv["id"]:
                 state["pieces"][pid]["conversation_id"] = None
-        conv.update(status="closed", members=[], pending_proposal=None)
+        conv.update(
+            status="closed",
+            members=[],
+            pending_proposal=None,
+            last_active_turn=state["turn"],
+            closed_turn=state["turn"],
+        )
         return [
             event(
                 "ConversationClosed",
@@ -139,8 +145,10 @@ class DialogueMixin:
                 "kind": "ordinary",
                 "status": "active",
                 "members": members,
+                "participant_ids": list(members),
                 "initiator_id": actor,
                 "created_turn": state["turn"],
+                "last_active_turn": state["turn"],
                 "parent_ids": [p["id"] for p in parents],
                 "counted_message_ids": sorted(counted),
                 "messages": [],
@@ -231,7 +239,15 @@ class DialogueMixin:
             return await self._ordinary_vote(state, conv, work)
         order = work.setdefault("member_order", list(conv["members"]))
         index = work.setdefault("member_index", 0)
-        if index >= len(order):
+        processed = work.setdefault("processed_members", list(order[:index]))
+        eligible = [
+            member
+            for member in order
+            if member in conv["members"]
+            and member not in processed
+            and conv.get("last_spoke_turn", {}).get(member) != state["turn"]
+        ]
+        if not eligible:
             if conv.get("last_idle_turn") != state["turn"]:
                 active = conv.get("last_activity_turn") == state["turn"]
                 conv["idle_turns"] = 0 if active else conv.get("idle_turns", 0) + 1
@@ -242,15 +258,12 @@ class DialogueMixin:
                 if conv["idle_turns"] >= 2
                 else []
             )
-        pid = order[index]
-        if (
-            pid not in conv["members"]
-            or conv.setdefault("last_spoke_turn", {}).get(pid) == state["turn"]
-        ):
-            work["member_index"] += 1
-            return []
+        pid = eligible[0]
+        conv.setdefault("last_spoke_turn", {})
+        version = conv.get("speech_version", len(conv.get("messages", [])))
+        latest = conv.get("messages", [])[-1] if conv.get("messages") else None
 
-        def validate(answer: dict) -> None:
+        def validate(speaker: str, answer: dict) -> None:
             kind = answer["kind"]
             if kind == "say" and not answer.get("speech"):
                 raise RuleError("SPEECH_REQUIRED", "Saying requires nonempty speech")
@@ -265,9 +278,9 @@ class DialogueMixin:
                     )
                 if kind == "propose_kick":
                     if (
-                        pid in conv.get("kick_used_by", [])
+                        speaker in conv.get("kick_used_by", [])
                         or target not in conv["members"]
-                        or target == pid
+                        or target == speaker
                     ):
                         raise RuleError(
                             "KICK_PROPOSAL_INVALID", "Kick target or proposal quota is invalid"
@@ -276,7 +289,7 @@ class DialogueMixin:
                     target not in state["pieces"]
                     or not state["pieces"][target]["alive"]
                     or target in conv["members"]
-                    or state["pieces"][target]["position"] not in visible_positions(state, pid)
+                    or state["pieces"][target]["position"] not in visible_positions(state, speaker)
                     or state["pieces"][target].get("battle_id")
                 ):
                     raise RuleError(
@@ -284,24 +297,42 @@ class DialogueMixin:
                         "Add target must be a living visible nonmember outside battle",
                     )
 
-        answer = await self.ask(
-            state,
-            pid,
-            "ordinary",
-            f"turn:{state['turn']}:ordinary:{cid}:{pid}",
-            ORDINARY_SCHEMA,
-            {
-                "conversation_id": cid,
-                "member_ids": list(conv["members"]),
-                "message_count": len(conv["counted_message_ids"]),
-                "instruction": "Talk as this person, not as an investigator giving a report. Read dialogue_recall, address one new point, vary length with actual content. Do not echo plans or interrogate by default. Use pass for nothing new or leave if you want to go; physical movement is available at your next eligible primary action, not through speech. Never say source/citation numbers.",
-                "remaining_messages": state["limits"]["conversation_max_messages"]
-                - len(conv["counted_message_ids"]),
-            },
-            validator=validate,
-        )
+        protocol = {
+            "conversation_id": cid,
+            "member_ids": list(conv["members"]),
+            "conversation_version": version,
+            "latest_message": deepcopy(latest),
+            "message_count": len(conv["counted_message_ids"]),
+            "instruction": "Respond to the LATEST message in this conversation, taking earlier remarks as background. If a new speaker just changed the point, reconsider rather than answering an older prompt as though nobody spoke. Talk as this person, address one new point, vary length with content. Do not echo plans or interrogate by default. Pass or leave are valid. Physical movement waits for a primary action. Never say source/citation numbers.",
+            "remaining_messages": state["limits"]["conversation_max_messages"]
+            - len(conv["counted_message_ids"]),
+        }
+        race = getattr(self, "ask_ordinary_race", None)
+        parallelism = getattr(getattr(self, "settings", None), "dialogue_parallelism", 1)
+        if (
+            race
+            and len(conv["members"]) >= 3
+            and len(eligible) > 1
+            and conv.get("messages")
+            and parallelism > 1
+        ):
+            pid, answer = await race(
+                state, cid, eligible[:parallelism], ORDINARY_SCHEMA, protocol, validate
+            )
+        else:
+            answer = await self.ask(
+                state,
+                pid,
+                "ordinary",
+                f"turn:{state['turn']}:ordinary:{cid}:{pid}",
+                ORDINARY_SCHEMA,
+                protocol,
+                validator=lambda answer: validate(pid, answer),
+            )
+        processed.append(pid)
         conv["last_spoke_turn"][pid] = state["turn"]
-        work["member_index"] += 1
+        work["member_index"] = len(processed)
+        conv["last_active_turn"] = state["turn"]
         drafts = []
         if answer.get("speech"):
             message_id = f"message_{uuid4().hex}"
@@ -309,11 +340,16 @@ class DialogueMixin:
                 "message_id": message_id,
                 "conversation_id": cid,
                 "speaker_id": pid,
+                "speaker_name": state["pieces"][pid].get("name", pid),
                 "speech": answer["speech"],
+                "turn": state["turn"],
+                "based_on_message_id": (latest or {}).get("message_id", (latest or {}).get("id")),
+                "conversation_version": version,
             }
             conv.setdefault("messages", []).append(deepcopy(message))
             conv["counted_message_ids"].append(message_id)
             conv["last_activity_turn"] = state["turn"]
+            conv["speech_version"] = version + 1
             drafts.append(event("ConversationMessage", pid, message, list(conv["members"])))
             if len(conv["counted_message_ids"]) >= state["limits"]["conversation_max_messages"]:
                 return drafts + self._close_conversation(state, conv, "message_limit")

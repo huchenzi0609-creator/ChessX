@@ -157,6 +157,7 @@ def commit_move(state: dict, pid: str, target: dict) -> list[dict]:
     legal_move(state, pid, target)
     piece = live_piece(state, pid)
     origin = dict(piece["position"])
+    path = trace_path(piece, target)
     piece["position"] = dict(target)
     piece["rest_remaining"] = movement_rest(piece, origin, target)
     return [
@@ -165,8 +166,11 @@ def commit_move(state: dict, pid: str, target: dict) -> list[dict]:
             "actor_id": pid,
             "payload": {
                 "piece_id": pid,
+                "piece_name": piece.get("name", pid),
+                "piece_type": piece["type"],
                 "origin": origin,
                 "position": dict(target),
+                "path": path,
                 "rest_remaining": piece["rest_remaining"],
             },
         }

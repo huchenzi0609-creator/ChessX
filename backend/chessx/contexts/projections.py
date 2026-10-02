@@ -90,6 +90,9 @@ LANGUAGE_FIELDS = {
     "battle_id",
     "actor_id",
     "speaker_id",
+    "speaker_name",
+    "based_on_message_id",
+    "conversation_version",
     "piece_id",
     "member_ids",
     "participants",
@@ -280,6 +283,54 @@ def project_event(state, event: dict, pid: str) -> dict | None:
         return header
     if kind in {"TurnStarted", "TurnCompleted"}:
         return {**header, "payload": {"turn": event.get("turn", payload.get("turn"))}}
+    if kind in {"MoveCommitted", "MovementCommitted", "PieceMoved"}:
+        mover = payload.get("piece_id", event.get("actor_id"))
+        path = payload.get("path", [])
+        if not isinstance(path, list):
+            path = []
+        if mover == pid:
+            header["payload"] = {
+                key: deepcopy(payload[key])
+                for key in (
+                    "piece_id",
+                    "piece_name",
+                    "piece_type",
+                    "origin",
+                    "position",
+                    "from",
+                    "to",
+                    "actual_to",
+                    "path",
+                    "rest_remaining",
+                )
+                if key in payload
+            }
+            return header
+        visible = [deepcopy(pos) for pos in path if isinstance(pos, dict) and _in_view(own, pos)]
+        origin = payload.get("origin", payload.get("from"))
+        destination = payload.get("position", payload.get("actual_to", payload.get("to")))
+        seen_origin = isinstance(origin, dict) and _in_view(own, origin)
+        seen_destination = isinstance(destination, dict) and _in_view(own, destination)
+        if not visible and not seen_origin and not seen_destination:
+            return None
+        projected = {
+            key: deepcopy(payload[key])
+            for key in ("piece_id", "piece_name", "piece_type")
+            if key in payload
+        }
+        if seen_origin:
+            projected["origin"] = deepcopy(origin)
+        if seen_destination:
+            projected["position"] = deepcopy(destination)
+            if "rest_remaining" in payload:
+                projected["rest_remaining"] = payload["rest_remaining"]
+        if visible:
+            projected["path"] = visible
+            projected["path_visible_only"] = len(visible) != len(path)
+            if not seen_destination:
+                projected["last_visible_position"] = deepcopy(visible[-1])
+        header["payload"] = projected
+        return header
     position = payload.get("position", payload.get("actual_to", payload.get("to")))
     if not admitted and not (isinstance(position, dict) and _in_view(own, position)):
         return None

@@ -58,6 +58,8 @@ def leave_conversation(state: dict, pid: str) -> list[dict]:
         for member in conv["members"]:
             state["pieces"][member]["conversation_id"] = None
         conv["status"] = "closed"
+        conv["last_active_turn"] = state["turn"]
+        conv["closed_turn"] = state["turn"]
         conv["members"] = []
         drafts.append(
             event(

@@ -258,6 +258,7 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
                     "response_format": settings.response_format,
                     "tokenizer": settings.tokenizer_name,
                     "context_capacity": settings.context_capacity,
+                    "dialogue_parallelism": settings.dialogue_parallelism,
                 }
             ),
             prompt_hash=digest(prompt_manifest()),

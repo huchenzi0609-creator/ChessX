@@ -5,6 +5,7 @@ import json
 import math
 import time
 from copy import deepcopy
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 
@@ -39,6 +40,13 @@ speech必须是自然台词，严禁参考编号、脚注、receipt/event/seq/me
 只按本人可见或曾听到的信息找路；不知道位置时可探索但不能编造目标坐标。移动有休息代价、可能遭遇阻挡；语言阶段不允许用speech替代move。
 保留自愿等待、留守和拒绝的权利，不为了显得活跃而随机移动或强造冲突。"""
 
+BARD_BEHAVIOR_VERSION = "natural-story-v1"
+# A tracked, operator-owned document is trusted instruction. Source events and
+# personal designs remain quoted user data and cannot substitute this template.
+BARD_DISCIPLINE = (
+    Path(__file__).resolve().parents[3] / "prompts" / "bard-discipline.md"
+).read_text(encoding="utf-8")
+
 
 STAGE_OUTPUT_LIMITS = {
     "memory": 1024,
@@ -60,12 +68,7 @@ def compose_messages(
     maximum = maximum or STAGE_OUTPUT_LIMITS.get(stage, 512)
     instructions = SYSTEM_PROTOCOL
     if stage == "bard":
-        instructions += (
-            "\nYou are the bard writing a story, not a chess-piece speaker. "
-            "The story has no fixed 100-token speech limit or 2048-token manuscript limit. "
-            "Let the material determine paragraph count and length, within available model capacity and run budget. "
-            "Write a complete event-grounded story; do not pad or invent facts to extend it."
-        )
+        instructions += "\n" + BARD_DISCIPLINE
     else:
         instructions += (
             f"\nThe ENTIRE formal JSON, including all fields and citations, must fit within {maximum} tokens. "
@@ -83,9 +86,6 @@ def compose_messages(
         }
     ):
         instructions += "\n" + CHARACTER_BEHAVIOR
-    if stage == "bard":
-        instructions += "\nEvent-based stories must cite supplied event IDs through event_refs, not role speech."
-        instructions += " Do not copy malformed internal citation markers into quoted character dialogue; event_refs is the separate citation channel."
     if stage == "memory":
         instructions += (
             "\nThis is a private memory editor, not a speech. Summarize evolving memories concisely; "
@@ -110,7 +110,7 @@ def compose_messages(
             "Ordinary-conversation freedom to leave does not itself grant passage here."
         )
     messages = [{"role": "system", "content": instructions}]
-    if isinstance(discipline, str) and discipline.strip():
+    if stage != "bard" and isinstance(discipline, str) and discipline.strip():
         messages.append(
             {
                 "role": "system",
@@ -147,6 +147,7 @@ def prompt_manifest() -> dict:
     return {
         "behavior_version": CHARACTER_BEHAVIOR_VERSION,
         "character_behavior": CHARACTER_BEHAVIOR,
+        "bard_behavior_version": BARD_BEHAVIOR_VERSION,
         "stage_system_messages": {
             stage: compose_messages(stage, {}, {})[0]["content"] for stage in sorted(stages)
         },

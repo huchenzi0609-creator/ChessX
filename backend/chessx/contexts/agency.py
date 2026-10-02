@@ -29,10 +29,15 @@ def dialogue_recall(receipts: list[dict], pid: str, conversation_id: str | None 
         if not isinstance(speech, str):
             continue
         heard.append(
-            {"speaker_id": payload.get("speaker_id", event.get("actor_id")), "speech": speech}
+            {
+                "speaker_id": payload.get("speaker_id", event.get("actor_id")),
+                "speech": speech,
+                "message_id": payload.get("message_id", payload.get("id")),
+            }
         )
     return {
         "recent_heard": deepcopy(heard[-12:]),
+        "latest_heard": deepcopy(heard[-1]) if heard else None,
         "last_own_utterances": [item["speech"] for item in heard if item["speaker_id"] == pid][-3:],
         "scope": "Only personally delivered speech; a bounded recent window, not the whole conversation.",
     }
@@ -69,7 +74,9 @@ def navigation(observation: dict, receipts: list[dict], pid: str, stage: str) ->
         if channel not in {"MoveCommitted", "PieceMoved", "DeathCommitted"}:
             continue
         who = payload.get("piece_id", event.get("actor_id"))
-        position = payload.get("position", payload.get("actual_to"))
+        position = payload.get(
+            "position", payload.get("actual_to", payload.get("last_visible_position"))
+        )
         if (
             isinstance(who, str)
             and who != pid

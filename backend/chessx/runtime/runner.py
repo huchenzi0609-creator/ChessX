@@ -8,6 +8,7 @@ import asyncio
 import copy
 import json
 import time
+from contextvars import ContextVar
 from functools import partial
 from uuid import uuid4
 
@@ -26,6 +27,7 @@ from chessx.rules.geometry import begin_turn, legal_move, rest_at_start, visible
 from chessx.runtime import schemas
 from chessx.runtime.combat import CombatMixin
 from chessx.runtime.dialogue import DialogueMixin
+from chessx.runtime.dialogue_race import DialogueRaceMixin
 from chessx.runtime.movement import MovementMixin
 from chessx.runtime.story import StoryMixin
 from chessx.storage.store import ConflictError, Store, canonical, digest
@@ -37,15 +39,24 @@ class BudgetError(Exception):
     code = "RUN_BUDGET_EXCEEDED"
 
 
-class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
+class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, StoryMixin):
     def __init__(self, store: Store, settings):
         self.store = store
         self.settings = settings
         self.adapters: dict = {}
         self.tasks: dict[str, asyncio.Task] = {}
+        self._operation_context = ContextVar("chessx_operation", default=None)
         self._operation = None
         self._live_adapter = None
         self.prompt_manifest_hash = digest(prompt_manifest())
+
+    @property
+    def _operation(self):
+        return self._operation_context.get()
+
+    @_operation.setter
+    def _operation(self, value):
+        self._operation_context.set(value)
 
     def adapter(self, state):
         wid = state["world_id"]
@@ -282,7 +293,20 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
         except TimeoutError:
             raise BudgetError() from None
 
-    async def ask(self, state, pid, stage, slot, schema, protocol, validator=None, context=None):
+    async def ask(
+        self,
+        state,
+        pid,
+        stage,
+        slot,
+        schema,
+        protocol,
+        validator=None,
+        context=None,
+        *,
+        max_attempts=3,
+        on_prepare=None,
+    ):
         wid = state["world_id"]
         context = context or build_context(state, pid, stage, protocol)
         context = copy.deepcopy(context)
@@ -311,7 +335,7 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
         )
         if isinstance(adapter, ProviderAdapter) and not adapter._probed:
             await self.ensure_probe(state, adapter)
-        for _ in range(3):
+        for attempt_index in range(max_attempts):
             calls = self.store.call_count(wid)
             total = sum(
                 state["usage"].get(k, 0)
@@ -349,6 +373,8 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             ):
                 raise BudgetError()
             attempt = self.store.prepare(wid, slot, state["generation"], context)
+            if on_prepare is not None:
+                on_prepare(slot, attempt)
             state["usage"]["calls"] = self.store.call_count(wid)
             try:
                 result = await self._within_wall_budget(
@@ -418,7 +444,8 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                 }
                 if code in repairs:
                     context["protocol"]["validation_feedback"]["instruction"] = repairs[code]
-                await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
+                if attempt_index + 1 < max_attempts:
+                    await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
         raise ModelError(
             code,
             "The response did not pass validation after the bounded attempts.",
@@ -496,6 +523,9 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
             current["lifecycle"] = (
                 "PAUSED_BUDGET" if isinstance(error, BudgetError) else "PAUSED_ERROR"
             )
+            # Requests may have completed even if their result is discarded or
+            # a later validation pauses the transition; retain known usage only.
+            current["usage"] = copy.deepcopy(state["usage"])
             current["usage"]["calls"] = self.store.call_count(wid)
             current["error"] = {
                 "code": getattr(error, "code", "SCHEMA_INVALID"),
@@ -526,6 +556,9 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
         if phase == "START":
             state["turn"] = state["completed_turn"] + 1
             begin_turn(state)
+            for conversation in state["conversations"].values():
+                if conversation.get("status") == "active":
+                    conversation["last_active_turn"] = state["turn"]
             state["phase"] = "PRIMARY"
             state["cursor"] = {"actor_index": 0, "work": None}
             return [{"type": "TurnStarted", "payload": {"turn": state["turn"]}, "audience": []}]
@@ -818,6 +851,8 @@ class WorldRunner(MovementMixin, DialogueMixin, CombatMixin, StoryMixin):
                     event["audience"] = before["conversations"].get(cid, {}).get("members", [])
                     continue
             positions = []
+            if event.get("type") == "MoveCommitted":
+                positions.extend(event.get("payload", {}).get("path", []))
             for key in ("position", "origin", "anchor"):
                 pos = event.get("payload", {}).get(key)
                 if pos:

@@ -49,6 +49,8 @@ PROTOCOL_FIELDS = {
     "max_messages",
     "messages",
     "latest_proposals",
+    "latest_message",
+    "conversation_version",
 }
 
 
@@ -192,12 +194,17 @@ def bard_context(state, start_seq: int, end_seq: int, events: list[dict]) -> dic
         "piece_id",
         "actor_id",
         "speaker_id",
+        "speaker_name",
+        "piece_name",
+        "sender_id",
+        "recipient_id",
         "conversation_id",
         "battle_id",
         "speech",
         "text",
         "public_narrative",
         "from",
+        "origin",
         "to",
         "actual_to",
         "position",
@@ -225,7 +232,7 @@ def bard_context(state, start_seq: int, end_seq: int, events: list[dict]) -> dic
             continue
         projected = {
             key: deepcopy(event[key])
-            for key in ("id", "event_id", "seq", "turn", "type", "kind")
+            for key in ("id", "event_id", "seq", "turn", "type", "kind", "actor_id")
             if key in event
         }
         projected["id"] = event.get(
@@ -242,5 +249,20 @@ def bard_context(state, start_seq: int, end_seq: int, events: list[dict]) -> dic
         "start_seq": start_seq,
         "end_seq": end_seq,
         "events": allowed,
-        "instruction": "Compile only these event records. Speech is a claim by its speaker, not proof. Cite provided event IDs in every paragraph. Do not invent structural facts.",
+        "public_cast": [
+            {"id": pid, "name": piece.get("name", pid)}
+            for pid, piece in state.get("pieces", {}).items()
+            if any(
+                pid == event.get("actor_id")
+                or pid
+                in (
+                    event.get("payload", {}).get("speaker_id"),
+                    event.get("payload", {}).get("piece_id"),
+                    event.get("payload", {}).get("sender_id"),
+                    event.get("payload", {}).get("recipient_id"),
+                )
+                for event in allowed
+            )
+        ],
+        "instruction": "Select and adapt meaningful events into a natural story, not a turn-by-turn report. Merge repetition and omit low-signal acts; preserve causal outcomes. Speech is its speaker's claim, not proof. Cite only original IDs supporting each paragraph's core facts.",
     }

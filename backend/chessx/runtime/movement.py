@@ -147,6 +147,8 @@ class MovementMixin:
             "mode": mode,
             "position": deepcopy(group["position"]),
             "created_turn": state["turn"],
+            "last_active_turn": state["turn"],
+            "participant_ids": list(members),
             "max_messages": state["limits"]["conversation_max_messages"],
         }
         state["conversations"][cid] = conversation
@@ -238,6 +240,7 @@ class MovementMixin:
                         "conversation_id": cid,
                         "message_id": message_id,
                         "speaker_id": pid,
+                        "speaker_name": state["pieces"][pid].get("name", pid),
                         "speech": reply["speech"],
                         "proposal": reply.get("proposal", "undecided"),
                     },
@@ -284,6 +287,8 @@ class MovementMixin:
         else:
             return drafts
         conv["status"] = "closed"
+        conv["last_active_turn"] = state["turn"]
+        conv["closed_turn"] = state["turn"]
         work["stage"] = "result"
         drafts.append(
             event(
