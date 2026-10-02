@@ -25,6 +25,7 @@ class ModelError(Exception):
         self.details = {}
         reasons = {
             "FORMAL_BUDGET_EXCEEDED",
+            "CONTEXT_INPUT_BUDGET_EXCEEDED",
             "JSON_INVALID",
             "OBJECT_REQUIRED",
             "SCHEMA_MISMATCH",

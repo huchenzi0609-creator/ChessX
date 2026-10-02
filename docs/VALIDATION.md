@@ -16,7 +16,7 @@
 
 | 范围 | 结果 | 证据 |
 |---|---|---|
-| 后端 | 418项离线测试通过 | tests/；pytest |
+| 后端 | 429项离线测试通过 | tests/；pytest |
 | 前端 | 34项组件／状态／契约测试通过 | frontend/src/**/*.test.tsx及api.test.ts |
 | 静态检查 | Ruff lint／格式、TypeScript、Prettier通过 | pyproject.toml／frontend package scripts |
 | 前端生产构建 | 通过 | Vite bundle，约87 KB gzip JS |
@@ -94,6 +94,12 @@
 - 本地实测摘要在Git忽略的 `data/dialogue-editorial-live-summary.json`；吟游样本正文只在本地私有文件，不进入对话或Git。
 
 ## 实施边界与后续
+
+导航上下文修复（2026-10-03）：第65回合PRIMARY、actor_index=4的下一行动在网络前被拦。原输入16252 token，旧裁剪保留每人至少一条派生接近路线及每种历史至少一条，最小仍8201／8192；并非鉴权、网络或服务商报错。压力下保留全体已知人物的坐标、时间、可见性和旧位置性质，移除可重建算术／日志ID，路线示例窗口允许完整省略至零，人物锚点与存档不裁减。
+
+新增11项组合压力回归，429项后端及静态／密钥检查通过。使用原存档做8角色×8阶段×原请求／带纠错反馈共128次离线拟合，全部成功且不修改原状态；实际失败请求现为8161 token，已拟合DTO追加纠错再拟合为8104，预算仍8192，全部7个已知人物位置保留。没有发送新的模型生成或能力探测请求。汇总在Git忽略的 `data/context-window-validation-summary.json`。
+
+原暂停已在唯一数据库写锁下复核并清除；第65回合PRIMARY、actor_index=4、completed_turn=64均保持，生命周期PAUSED、错误为空。除seq、生命周期和错误标记之外全部存档字段逐一hash一致，模型操作数不变，未回退／重做已行动棋子。常驻后台更新后8001健康与5180网页HTTP 200。摘要在Git忽略的 `data/context-window-main-recovery-summary.json`。
 
 开始阶段CoT暂停修复（2026-10-03）：原第65回合PRIMARY之前的压缩按4→2→1→1重试，推理分别1573／1049／1479／2609 token；单条仍超限，前次小样本成功不能代表任意历史摘要可靠。默认切换为无API的逐回执摘录，不绕过真实模型CoT校验。新增25项回归，418项后端与静态／密钥检查通过；旧LLM路径仅在显式选择时使用。
 

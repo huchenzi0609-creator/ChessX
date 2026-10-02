@@ -1,4 +1,4 @@
-"""Fit a request by trimming only reconstructible recent-history windows.
+"""Fit a request by trimming reconstructible navigation and history windows.
 
 All character anchors, present goals/memory and narrator participant memories
 are immutable inputs. Oversized essential inputs pause before network activity.
@@ -19,6 +19,93 @@ STAGE_INPUT_LIMITS = {
     "outcome": 12288,
     "bard": 12288,
 }
+
+_DERIVED_LOCATION_FIELDS = {
+    "delta_row",
+    "delta_col",
+    "distance_band",
+    "age_turns",
+    "receipt_id",
+    "source_event_id",
+}
+
+
+def _reduce_navigation(context: dict) -> bool:
+    """Reduce advisory copies, retaining every dated owner-known location.
+
+    The complete geometric targets, current observation/pose, permissions and
+    pending contact are never windowed here. A removed approach is still
+    reconstructible from those targets and the full dated location list.
+    """
+    navigation = context.get("navigation")
+    if not isinstance(navigation, dict):
+        return False
+
+    def marked():
+        navigation["windowed"] = True
+        navigation["windowed_scope"] = (
+            "Derived examples/history only; all known dated positions retained."
+        )
+        if "movement_options_scope" in navigation:
+            navigation["movement_options_scope"] = (
+                "Windowed examples; complete geometric targets remain. Unknown cells may be "
+                "occupied; contacts require negotiation."
+            )
+        if "toward_known_people_scope" in navigation:
+            navigation["toward_known_people_scope"] = (
+                "Windowed optional approaches to dated known places, never live tracking."
+            )
+        return True
+
+    # These fields repeat current-position arithmetic or durable provenance.
+    # Identity, location, sighting turn/scope, visibility, status and bearings
+    # remain intact. No global state is consulted to refresh an old sighting.
+    reduced = False
+    locations = navigation.get("known_locations", [])
+    if isinstance(locations, list):
+        for record in locations:
+            if not isinstance(record, dict):
+                continue
+            for key in _DERIVED_LOCATION_FIELDS:
+                if key in record:
+                    record.pop(key)
+                    reduced = True
+    journey = navigation.get("self_journey", {})
+    routes = journey.get("recent_actual_routes") if isinstance(journey, dict) else None
+    if isinstance(routes, list):
+        for route in routes:
+            if not isinstance(route, dict):
+                continue
+            for key in ("receipt_id", "source_event_id"):
+                if key in route:
+                    route.pop(key)
+                    reduced = True
+    if reduced:
+        return marked()
+
+    options = navigation.get("movement_options")
+    if isinstance(options, list) and options:
+        options.pop()
+        return marked()
+    approaches = navigation.get("toward_known_people")
+    if isinstance(approaches, list) and approaches:
+        for approach in approaches:
+            candidates = approach.get("options") if isinstance(approach, dict) else None
+            if isinstance(candidates, list) and len(candidates) > 1:
+                candidates.pop()
+                return marked()
+        # Keeping one full approach for every person caused an artificial
+        # minimum. All people remain represented in known_locations instead.
+        approaches.pop()
+        return marked()
+    visited = navigation.get("visited_cells")
+    if isinstance(visited, list) and visited:
+        visited.pop(0)
+        return marked()
+    if isinstance(routes, list) and routes:
+        routes.pop(0)
+        return marked()
+    return False
 
 
 def request_input_tokens(
@@ -45,9 +132,9 @@ def fit_context(
 ) -> dict:
     """Return an independent fitted DTO, preserving the canonical receipt archive.
 
-    Drop oldest receipt records first. A negotiation transcript may be windowed
+    Reduce advisory navigation before historical evidence. A negotiation transcript may be windowed
     only when its latest structured proposals and current observed/contact state
-    are independently present. Keep the newest record in each window so that the
+    are independently present. Keep the newest record in each history window so that the
     immediate predecessor's delivery remains available; otherwise pause.
     """
     if max_output_tokens < 1 or model_capacity < 1:
@@ -67,6 +154,8 @@ def fit_context(
         )
 
     while not fits():
+        if _reduce_navigation(fitted):
+            continue
         evidence = fitted.get("evidence_index", {})
         lines = evidence.get("summary_lines") if isinstance(evidence, dict) else None
         if isinstance(lines, list) and len(lines) > 1:
@@ -101,44 +190,6 @@ def fit_context(
             records = None
         if records is not None:
             continue
-        navigation = fitted.get("navigation", {})
-        options = navigation.get("movement_options") if isinstance(navigation, dict) else None
-        if isinstance(options, list) and len(options) > 1:
-            options.pop()
-            continue
-        approaches = (
-            navigation.get("toward_known_people", []) if isinstance(navigation, dict) else []
-        )
-        reduced = False
-        for approach in approaches:
-            candidates = approach.get("options", [])
-            if len(candidates) > 1:
-                candidates.pop()
-                reduced = True
-                break
-        if reduced:
-            continue
-        visited = navigation.get("visited_cells") if isinstance(navigation, dict) else None
-        if isinstance(visited, list) and len(visited) > 1:
-            visited.pop(0)
-            continue
-        journey = navigation.get("self_journey", {}) if isinstance(navigation, dict) else {}
-        routes = journey.get("recent_actual_routes") if isinstance(journey, dict) else None
-        if isinstance(routes, list) and len(routes) > 1:
-            routes.pop(0)
-            continue
-        # Map evidence remains stored privately. Dates, bearings, positions and
-        # sighting scope are essential; repeated journal IDs are reconstructible.
-        map_records = navigation.get("known_locations", []) if isinstance(navigation, dict) else []
-        route_records = routes if isinstance(routes, list) else []
-        reduced = False
-        for record in map_records + route_records:
-            for key in ("receipt_id", "source_event_id"):
-                if key in record:
-                    record.pop(key)
-                    reduced = True
-        if reduced:
-            continue
         protocol = fitted.get("protocol", {})
         messages = protocol.get("messages") if isinstance(protocol, dict) else None
         current_state_present = bool(fitted.get("observation")) or (
@@ -155,5 +206,14 @@ def fit_context(
         raise ModelError(
             "CONTEXT_BUDGET_EXCEEDED",
             "Essential stage input exceeds its token budget or configured model capacity.",
+            details={
+                "reason": "CONTEXT_INPUT_BUDGET_EXCEEDED",
+                "actual_tokens": request_input_tokens(
+                    stage, fitted, schema, counter, max_output_tokens
+                ),
+                "limit": max(
+                    0, min(input_limit, model_capacity - max_output_tokens - REASONING_RESERVE)
+                ),
+            },
         )
     return fitted
