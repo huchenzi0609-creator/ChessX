@@ -20,6 +20,7 @@ from chessx.domain.errors import RuleError
 from chessx.domain.models import Intent
 from chessx.domain.profile import RULE_MANIFEST_HASH, frozen_rule_manifest
 from chessx.llm import FixtureAdapter, ModelError, ProviderAdapter
+from chessx.llm.feedback import validation_feedback
 from chessx.llm.provider import CHARACTER_BEHAVIOR_VERSION, STAGE_OUTPUT_LIMITS, prompt_manifest
 from chessx.llm.speech import validate_character_speech
 from chessx.rules.actions import apply_primary, create_transfer_offer, resolve_transfer
@@ -305,6 +306,7 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
         context=None,
         *,
         max_attempts=3,
+        max_cot_retries=3,
         on_prepare=None,
     ):
         wid = state["world_id"]
@@ -335,7 +337,8 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
         )
         if isinstance(adapter, ProviderAdapter) and not adapter._probed:
             await self.ensure_probe(state, adapter)
-        for attempt_index in range(max_attempts):
+        regular_failures, cot_retries = 0, 0
+        while regular_failures < max_attempts:
             calls = self.store.call_count(wid)
             total = sum(
                 state["usage"].get(k, 0)
@@ -419,12 +422,9 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
                 code = getattr(error, "code", "SCHEMA_INVALID")
                 details = error.details if isinstance(error, ModelError) else {}
                 self.store.fail_operation(wid, slot, attempt, code, details=details)
-                context.setdefault("protocol", {})["validation_feedback"] = {
-                    "code": code,
-                    "details": details,
-                    "formal_output_token_limit": maximum,
-                    "instruction": "Correct the indicated failure and return one complete JSON object with ONLY the supplied schema fields. Shorten text to fit the ENTIRE formal output budget; keep exposed reasoning well below 1000 tokens. Do not change world facts or use a fallback action.",
-                }
+                context.setdefault("protocol", {})["validation_feedback"] = validation_feedback(
+                    code, details, maximum
+                )
                 if code in {
                     # Transport/capability failures pause rather than spending on retries.
                     "MODEL_AUTH_FAILED",
@@ -438,14 +438,17 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
                     "MODEL_REQUEST_INVALID",
                 }:
                     raise
-                repairs = {
-                    "SPEECH_INTERNAL_REFERENCE": "Rewrite the intended utterance in natural spoken language without source IDs, citation numbers, footnotes or technical labels. Do not reproduce the offending marker.",
-                    "SPEECH_REPETITIVE": "Do not repeat the previous long utterance or paraphrase it again. Respond briefly to a new point; if there is nothing new, choose pass or leave when permitted by this stage.",
-                }
-                if code in repairs:
-                    context["protocol"]["validation_feedback"]["instruction"] = repairs[code]
-                if attempt_index + 1 < max_attempts:
-                    await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
+                if code == "COT_BUDGET_EXCEEDED":
+                    # A CoT failure at the last ordinary attempt must still get
+                    # its own correction, not immediately pause the operation.
+                    if cot_retries >= max_cot_retries:
+                        break
+                    cot_retries += 1
+                else:
+                    regular_failures += 1
+                    if regular_failures >= max_attempts:
+                        break
+                await asyncio.sleep(0 if state["mode"] == "fixture" else 1)
         raise ModelError(
             code,
             "The response did not pass validation after the bounded attempts.",

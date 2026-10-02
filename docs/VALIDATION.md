@@ -16,7 +16,7 @@
 
 | 范围 | 结果 | 证据 |
 |---|---|---|
-| 后端 | 304项离线测试通过 | tests/；pytest |
+| 后端 | 308项离线测试通过 | tests/；pytest |
 | 前端 | 34项组件／状态／契约测试通过 | frontend/src/**/*.test.tsx及api.test.ts |
 | 静态检查 | Ruff lint／格式、TypeScript、Prettier通过 | pyproject.toml／frontend package scripts |
 | 前端生产构建 | 通过 | Vite bundle，约87 KB gzip JS |
@@ -94,6 +94,8 @@
 - 本地实测摘要在Git忽略的 `data/dialogue-editorial-live-summary.json`；吟游样本正文只在本地私有文件，不进入对话或Git。
 
 ## 实施边界与后续
+
+CoT重试修订（2026-10-02）：原存档第44回合的两次截断占用通用额度，第三次才出现1034 token推理超限。新增4项离线测试证明独立补试可成功、多人双路超限后可单路恢复、持续超限最多4个CoT响应、调用预算为2时不发第3请求，失败不改会话／个人记忆／cursor。本次未发真实模型请求。
 
 1. 单机、单进程、一个活动世界；POSIX进程锁意味着当前支持macOS／Linux。未实现公网鉴权／多用户授权。
 2. 为精确审计，每个事件提交保留完整状态快照，长局磁盘增长较快；后续可稀疏checkpoint＋补丁，保留原始事件。

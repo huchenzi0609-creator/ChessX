@@ -11,6 +11,7 @@ from functools import partial
 from chessx.contexts import build_context
 from chessx.contexts.budgets import fit_context, request_input_tokens
 from chessx.llm import ModelError, ProviderAdapter
+from chessx.llm.feedback import validation_feedback
 from chessx.storage.store import ConflictError, canonical
 
 
@@ -68,6 +69,7 @@ class DialogueRaceMixin:
         candidates, tasks = [], []
         winner = None
         failure = None
+        cot_candidate = None
 
         async def generate(candidate):
             self._operation = None  # Task-local, never another candidate's output.
@@ -87,6 +89,7 @@ class DialogueRaceMixin:
                     validator=partial(validator, candidate["pid"]),
                     context=candidate["context"],
                     max_attempts=1,
+                    max_cot_retries=0,
                     on_prepare=prepared,
                 )
                 candidate["operation"] = self._operation
@@ -120,6 +123,12 @@ class DialogueRaceMixin:
                         break
                     except (ModelError, ConflictError, BudgetError) as error:
                         failure = failure or error
+                        if (
+                            getattr(error, "code", "") == "COT_BUDGET_EXCEEDED"
+                            and cot_candidate is None
+                        ):
+                            cot_candidate = candidates[tasks.index(task)]
+                            cot_candidate["cot_error"] = error
                         if isinstance(error, ConflictError) or getattr(error, "code", "") in {
                             "MODEL_AUTH_FAILED",
                             "MODEL_BALANCE_INSUFFICIENT",
@@ -127,7 +136,7 @@ class DialogueRaceMixin:
                             "MODEL_RATE_LIMITED",
                         }:
                             raise
-            if winner is None:
+            if winner is None and cot_candidate is None:
                 raise failure or ModelError(
                     "DIALOGUE_GENERATION_FAILED", "No candidate produced a valid reply."
                 )
@@ -162,6 +171,27 @@ class DialogueRaceMixin:
                     for c in candidates
                 )
             state["usage"]["calls"] = self.store.call_count(wid)
+        if winner is None:
+            # Both branches finished without publishing. Retry one CoT-failing
+            # owner on the unchanged conversation, using the shared remaining
+            # budget rather than its original one-attempt reservation.
+            candidate = cot_candidate
+            context = deepcopy(candidate["context"])
+            error = candidate["cot_error"]
+            context.setdefault("protocol", {})["validation_feedback"] = validation_feedback(
+                error.code, error.details, 512
+            )
+            answer = await self.ask(
+                state,
+                candidate["pid"],
+                "ordinary",
+                candidate["slot"],
+                schema,
+                protocol,
+                validator=partial(validator, candidate["pid"]),
+                context=context,
+            )
+            return candidate["pid"], answer
         self._operation = winner["operation"]
         self._operation[2]["dialogue_parallelism"] = len(selected)
         self._operation[2]["conversation_version"] = protocol.get("conversation_version")

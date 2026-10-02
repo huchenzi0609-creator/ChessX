@@ -38,7 +38,7 @@ CHESSX_TOKENIZER_AGREEMENT=false
 - MODEL_BALANCE_INSUFFICIENT／MODEL_RATE_LIMITED：余额不足／限流；暂停，不自动连续重复请求。
 - MODEL_REQUEST_INVALID：HTTP 400／422，检查服务参数兼容性；不自动重复同一请求。
 - MODEL_OUTPUT_INVALID：查看本地错误的 `details.reason`；区分 `FORMAL_BUDGET_EXCEEDED`（actual_tokens／limit）、`RESPONSE_TRUNCATED`、`JSON_INVALID`、`SCHEMA_MISMATCH`。重试自动把该安全诊断与阶段预算送回模型，不需要重启或重置世界。
-- COT_BUDGET_EXCEEDED：`details`列出推理token数／上限；重试要求缩短推理，不能截断原推理后冒充合法结果。
+- COT_BUDGET_EXCEEDED：`details`列出推理token数／上限；自动带约250 token简短推理反馈补试，CoT错误独立最多3次额外重试，不被之前的格式重试用尽。多人候选都超限时转为单路补试。所有补试仍受本段预算约束，不能截断推理冒充合法结果。
 
 不要粘贴完整上游日志排错，只报告错误代码。密钥疑似进入任何公开位置时在服务端撤销重发，不把原密钥再发送给协作者。
 
