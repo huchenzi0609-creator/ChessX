@@ -38,6 +38,7 @@ CHESSX_TOKENIZER_AGREEMENT=false
 - MODEL_BALANCE_INSUFFICIENT／MODEL_RATE_LIMITED：余额不足／限流；暂停，不自动连续重复请求。
 - MODEL_REQUEST_INVALID：HTTP 400／422，检查服务参数兼容性；不自动重复同一请求。
 - MODEL_OUTPUT_INVALID：查看本地错误的 `details.reason`；区分 `FORMAL_BUDGET_EXCEEDED`（actual_tokens／limit）、`RESPONSE_TRUNCATED`、`JSON_INVALID`、`SCHEMA_MISMATCH`。重试自动把该安全诊断与阶段预算送回模型，不需要重启或重置世界。
+- RESPONSE_TRUNCATED：同时记录 `requested_max_tokens`（API合计输出额度）、`reasoning_tokens`、`formal_tokens` 与 `truncated_part`。受限角色的推理已超限会改走CoT纠错；其他截断要求短推理与最小完整JSON。不会从不完整文本补造一个成功响应。
 - COT_BUDGET_EXCEEDED：`details`列出推理token数／上限；自动带约250 token简短推理反馈补试，CoT错误独立最多3次额外重试，不被之前的格式重试用尽。多人候选都超限时转为单路补试。所有补试仍受本段预算约束，不能截断推理冒充合法结果。
 - 上述CoT长度限制适用于棋子与其他受限阶段；吟游诗人按2026-10-02补充要求解除固定1000 token推理上限，仍须返回公开推理和完整成稿，受请求合计输出、模型容量、调用与时间预算约束。
 

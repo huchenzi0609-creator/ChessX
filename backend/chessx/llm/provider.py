@@ -104,6 +104,7 @@ def compose_messages(
     if stage == "negotiation":
         instructions += (
             "\nThis is movement-contact negotiation, not an ordinary conversation. "
+            "Decide this local contact only; do not re-analyze the whole investigation. Return minimal kind/speech/proposal JSON, with concise reasoning. "
             "Leaving or exhausting idle permissions without agreement may lead to combat under this stage's rules. "
             "Read allowed_results and latest_proposals; use the proposal field for your chosen authorized resolution. "
             "Ordinary-conversation freedom to leave does not itself grant passage here."
@@ -321,10 +322,40 @@ class ProviderAdapter:
             choice = envelope["choices"][0]
             message = choice["message"]
             if choice.get("finish_reason") == "length":
+                partial_reasoning = (
+                    message.get("reasoning_content", message.get("reasoning", ""))
+                    if isinstance(message, dict)
+                    else ""
+                )
+                partial_content = message.get("content", "") if isinstance(message, dict) else ""
+                partial_reasoning = partial_reasoning if isinstance(partial_reasoning, str) else ""
+                partial_content = partial_content if isinstance(partial_content, str) else ""
+                reasoning_tokens = self.counter.count(partial_reasoning)
+                diagnostics = {
+                    "reasoning_tokens": reasoning_tokens,
+                    "formal_tokens": self.counter.count(partial_content),
+                    "requested_max_tokens": body["max_tokens"],
+                    "truncated_part": "formal_output"
+                    if partial_content.strip()
+                    else "reasoning"
+                    if partial_reasoning.strip()
+                    else "unknown",
+                }
+                if stage != "bard" and reasoning_tokens > 1000:
+                    raise ModelError(
+                        "COT_BUDGET_EXCEEDED",
+                        "Overlong exposed reasoning exhausted the request before completion.",
+                        details={
+                            **diagnostics,
+                            "reason": "REASONING_BUDGET_EXCEEDED",
+                            "actual_tokens": reasoning_tokens,
+                            "limit": 1000,
+                        },
+                    )
                 raise ModelError(
                     "MODEL_OUTPUT_INVALID",
                     "Provider response was truncated.",
-                    details={"reason": "RESPONSE_TRUNCATED", "limit": maximum},
+                    details={**diagnostics, "reason": "RESPONSE_TRUNCATED", "limit": maximum},
                 )
             if not isinstance(message, dict) or choice.get("finish_reason") not in {"stop", None}:
                 raise ValueError()

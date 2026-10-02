@@ -38,10 +38,23 @@ class ModelError(Exception):
         }
         if isinstance(details.get("reason"), str) and details["reason"] in reasons:
             self.details["reason"] = details["reason"]
-        for key in ("actual_tokens", "limit", "violation_count"):
+        for key in (
+            "actual_tokens",
+            "limit",
+            "violation_count",
+            "reasoning_tokens",
+            "formal_tokens",
+            "requested_max_tokens",
+        ):
             value = details.get(key)
             if type(value) is int and value >= 0:
                 self.details[key] = value
+        if isinstance(details.get("truncated_part"), str) and details["truncated_part"] in {
+            "reasoning",
+            "formal_output",
+            "unknown",
+        }:
+            self.details["truncated_part"] = details["truncated_part"]
         keywords = details.get("schema_keywords", [])
         allowed = {
             "required",
