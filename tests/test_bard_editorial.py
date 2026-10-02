@@ -104,7 +104,7 @@ async def test_bard_accepts_long_exposed_reasoning_but_piece_still_rejects_it():
     trace = "synthetic reasoning " * 1100
 
     def handle(request):
-        stage = json.loads(request.content)["messages"][-1]["content"]
+        stage = json.loads(json.loads(request.content)["messages"][-1]["content"])["stage"]
         content = (
             {
                 "title": "Story",
@@ -116,7 +116,7 @@ async def test_bard_accepts_long_exposed_reasoning_but_piece_still_rejects_it():
                     }
                 ],
             }
-            if '"stage": "bard"' in stage
+            if stage == "bard"
             else {"kind": "wait"}
         )
         return httpx.Response(

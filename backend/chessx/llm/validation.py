@@ -103,6 +103,7 @@ def validate_output(
     max_output_tokens: int | None,
     *,
     max_reasoning_tokens: int | None = 1000,
+    private_memory: bool = False,
 ) -> dict:
     reasoning_tokens = counter.count(reasoning)
     if max_reasoning_tokens is not None and reasoning_tokens > max_reasoning_tokens:
@@ -166,6 +167,11 @@ def validate_output(
     def walk(value: object) -> None:
         if isinstance(value, dict):
             for key, item in value.items():
+                memory_text = (
+                    private_memory
+                    and key == "text"
+                    and {"kind", "salience", "source_receipt_ids"}.issubset(value)
+                )
                 if key.lower() in {"reasoning", "reasoning_content", "chain_of_thought", "cot"}:
                     raise ModelError(
                         "MODEL_OUTPUT_INVALID",
@@ -174,6 +180,7 @@ def validate_output(
                     )
                 if (
                     (key == "speech" or key == "text" and "event_refs" not in value)
+                    and not memory_text
                     and isinstance(item, str)
                     and counter.count(item) > 100
                 ):
@@ -184,6 +191,7 @@ def validate_output(
                 if (
                     key in {"speech", "text"}
                     and "event_refs" not in value
+                    and not memory_text
                     and isinstance(item, str)
                 ):
                     validate_speech_text(item)

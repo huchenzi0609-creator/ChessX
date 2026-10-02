@@ -13,6 +13,7 @@ REASONING_RESERVE = 1000
 FRAMING_ALLOWANCE = 128
 STAGE_INPUT_LIMITS = {
     "memory": 6144,
+    "memory_compaction": 6144,
     "memory_editor": 6144,
     "battle_narrator": 12288,
     "outcome": 12288,
@@ -66,6 +67,10 @@ def fit_context(
         )
 
     while not fits():
+        retained = fitted.get("retained_important_facts")
+        if stage == "memory_compaction" and isinstance(retained, list) and len(retained) > 1:
+            retained.pop(0)
+            continue
         receipts = fitted.get("receipts")
         if isinstance(receipts, list) and len(receipts) > 1:
             receipts.pop(0)
@@ -78,6 +83,56 @@ def fit_context(
         own_utterances = recall.get("last_own_utterances") if isinstance(recall, dict) else None
         if isinstance(own_utterances, list) and len(own_utterances) > 1:
             own_utterances.pop(0)
+            continue
+        # Retrieved copies remain in the private archive/ledger. Window them by
+        # relevance; never modify or acknowledge coverage of their sources.
+        memory_recall = fitted.get("memory_recall", {})
+        for field in ("archive_evidence", "long_term"):
+            records = memory_recall.get(field) if isinstance(memory_recall, dict) else None
+            if isinstance(records, list) and len(records) > 1:
+                records.pop()
+                break
+        else:
+            records = None
+        if records is not None:
+            continue
+        navigation = fitted.get("navigation", {})
+        options = navigation.get("movement_options") if isinstance(navigation, dict) else None
+        if isinstance(options, list) and len(options) > 1:
+            options.pop()
+            continue
+        approaches = (
+            navigation.get("toward_known_people", []) if isinstance(navigation, dict) else []
+        )
+        reduced = False
+        for approach in approaches:
+            candidates = approach.get("options", [])
+            if len(candidates) > 1:
+                candidates.pop()
+                reduced = True
+                break
+        if reduced:
+            continue
+        visited = navigation.get("visited_cells") if isinstance(navigation, dict) else None
+        if isinstance(visited, list) and len(visited) > 1:
+            visited.pop(0)
+            continue
+        journey = navigation.get("self_journey", {}) if isinstance(navigation, dict) else {}
+        routes = journey.get("recent_actual_routes") if isinstance(journey, dict) else None
+        if isinstance(routes, list) and len(routes) > 1:
+            routes.pop(0)
+            continue
+        # Map evidence remains stored privately. Dates, bearings, positions and
+        # sighting scope are essential; repeated journal IDs are reconstructible.
+        map_records = navigation.get("known_locations", []) if isinstance(navigation, dict) else []
+        route_records = routes if isinstance(routes, list) else []
+        reduced = False
+        for record in map_records + route_records:
+            for key in ("receipt_id", "source_event_id"):
+                if key in record:
+                    record.pop(key)
+                    reduced = True
+        if reduced:
             continue
         protocol = fitted.get("protocol", {})
         messages = protocol.get("messages") if isinstance(protocol, dict) else None

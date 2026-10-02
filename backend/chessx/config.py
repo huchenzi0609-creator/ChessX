@@ -20,6 +20,7 @@ class Settings(BaseModel):
     context_capacity: int = Field(default=16384, ge=4096)
     character_input_limit: int = Field(default=8192, ge=1024)
     dialogue_parallelism: int = Field(default=2, ge=1, le=2)
+    memory_batch_size: int = Field(default=4, ge=1, le=32)
     data_dir: Path = ROOT / "data"
 
     @property
@@ -51,5 +52,6 @@ class Settings(BaseModel):
             context_capacity=int(get("CONTEXT_CAPACITY", "16384")),
             character_input_limit=int(get("CHARACTER_INPUT_LIMIT", "8192")),
             dialogue_parallelism=int(get("DIALOGUE_PARALLELISM", "2")),
+            memory_batch_size=int(get("MEMORY_BATCH_SIZE", "4")),
             data_dir=data,
         )

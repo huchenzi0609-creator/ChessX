@@ -13,6 +13,8 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+SPATIAL_MEMORY_SCHEMA_VERSION = 1
+
 
 def canonical(value: Any) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -90,6 +92,176 @@ class Store:
             for row in self.db.execute("SELECT state FROM worlds ORDER BY rowid DESC")
         ]
 
+    @staticmethod
+    def _record_spatial_sightings(
+        state: dict,
+        snapshot: dict,
+        source_event_id: str | None,
+        *,
+        owners: list[str] | None = None,
+    ) -> None:
+        """Persist only what each living owner can observe at this checkpoint.
+
+        Hidden living people and hidden deaths never update someone's memory.
+        A tombstone supplies an identity and position, but not a hidden name.
+        """
+        from chessx.contexts import observe
+
+        for owner in owners if owners is not None else state.get("private", {}):
+            if owner not in snapshot.get("pieces", {}):
+                continue
+            private = state["private"][owner]
+            memory = private.setdefault("spatial_memory", {})
+            seen = memory.setdefault("seen_people", {})
+            observation = observe(snapshot, owner)
+            sightings = [
+                {
+                    "piece_id": piece["id"],
+                    "name": piece["name"],
+                    "position": piece["position"],
+                    "status_at_sighting": "alive",
+                }
+                for piece in observation["pieces"]
+                if piece["id"] != owner
+            ]
+            for tombstone in observation["tombstones"]:
+                who = tombstone["piece_id"]
+                sighting = {
+                    "piece_id": who,
+                    "position": tombstone["position"],
+                    "status_at_sighting": "dead",
+                }
+                if isinstance(seen.get(who, {}).get("name"), str):
+                    sighting["name"] = seen[who]["name"]
+                sightings.append(sighting)
+            for sighting in sightings:
+                who = sighting["piece_id"]
+                entry = {
+                    **sighting,
+                    "last_seen_turn": snapshot.get("turn", 0),
+                    "source": "sighting",
+                    "source_event_id": source_event_id,
+                }
+                previous = seen.get(who, {})
+                unchanged = all(
+                    previous.get(key) == entry.get(key)
+                    for key in ("position", "name", "last_seen_turn", "status_at_sighting")
+                )
+                if not unchanged or not previous.get("source_event_id"):
+                    seen[who] = copy.deepcopy(entry)
+
+    def recover_spatial_memory(self, state: dict) -> dict:
+        """Return a legacy world's owner-scoped map recall; caller commits it.
+
+        Scan this world's checkpoints once, observing all missing owners at each
+        historical pose. SQLite extracts only small geometric fields, avoiding
+        deserialization of every growing receipt/private archive. Never change
+        historical snapshots or update an old sighting from today's global pose.
+        """
+        from chessx.rules.geometry import inside_board
+
+        recovered = copy.deepcopy(state)
+        owners = [
+            owner
+            for owner, private in recovered.get("private", {}).items()
+            if private.get("spatial_memory", {}).get("schema_version")
+            != SPATIAL_MEMORY_SCHEMA_VERSION
+        ]
+        if not owners:
+            return recovered
+        existing = {}
+        for owner in owners:
+            memory = recovered["private"][owner].setdefault("spatial_memory", {})
+            existing[owner] = copy.deepcopy(memory.get("seen_people", {}))
+            memory["seen_people"] = {}
+
+        # All owners share one streamed scan. No model/API operations occur.
+        def snapshot_from(row) -> dict:
+            return {
+                "pieces": json.loads(row["pieces"]),
+                "board": json.loads(row["board"]),
+                "turn": row["turn"],
+                "tombstones": json.loads(row["tombstones"] or "{}"),
+                "objects": {},
+            }
+
+        world_id = state["world_id"]
+        initial = self.db.execute(
+            """SELECT json_extract(state,'$.pieces') AS pieces,
+                      json_extract(state,'$.board') AS board,
+                      json_extract(state,'$.turn') AS turn,
+                      json_extract(state,'$.tombstones') AS tombstones
+               FROM initial_states WHERE world_id=?""",
+            (world_id,),
+        ).fetchone()
+        if initial is not None:
+            self._record_spatial_sightings(recovered, snapshot_from(initial), None, owners=owners)
+        rows = self.db.execute(
+            """SELECT seq, json_extract(state,'$.pieces') AS pieces,
+                      json_extract(state,'$.board') AS board,
+                      json_extract(state,'$.turn') AS turn,
+                      json_extract(state,'$.tombstones') AS tombstones,
+                      json_extract(event,'$.event_id') AS source_event_id
+               FROM events WHERE world_id=? AND seq<=? ORDER BY seq""",
+            (world_id, state["seq"]),
+        )
+        for row in rows:
+            self._record_spatial_sightings(
+                recovered,
+                snapshot_from(row),
+                row["source_event_id"] or f"{world_id}:{row['seq']}",
+                owners=owners,
+            )
+        for owner in owners:
+            memory = recovered["private"][owner]["spatial_memory"]
+            seen = memory["seen_people"]
+            # Preserve any valid newer owner record supplied by the caller;
+            # reported_locations is a separate field and is never promoted.
+            for who, record in existing[owner].items():
+                if (
+                    not isinstance(record, dict)
+                    or record.get("source") != "sighting"
+                    or who == owner
+                    or who not in recovered.get("pieces", {})
+                    or not isinstance(record.get("position"), dict)
+                    or not inside_board(recovered, record["position"])
+                    or record.get("status_at_sighting") not in {"alive", "dead"}
+                ):
+                    continue
+                source = record.get("source_event_id")
+                if source is not None and (
+                    not isinstance(source, str) or not source.startswith(f"{world_id}:")
+                ):
+                    continue
+                suffix = source.rsplit(":", 1)[-1] if isinstance(source, str) else ""
+                if source is not None and (not suffix.isdecimal() or int(suffix) > state["seq"]):
+                    continue
+                prior = seen.get(who)
+                old_turn, new_turn = (
+                    (prior or {}).get("last_seen_turn", -1),
+                    record.get("last_seen_turn", -1),
+                )
+                if type(new_turn) is not int or not 0 <= new_turn <= state.get("turn", 0):
+                    continue
+                if prior is None or (
+                    type(old_turn) is int and type(new_turn) is int and new_turn > old_turn
+                ):
+                    seen[who] = {
+                        key: record[key]
+                        for key in (
+                            "piece_id",
+                            "name",
+                            "position",
+                            "last_seen_turn",
+                            "status_at_sighting",
+                            "source",
+                            "source_event_id",
+                        )
+                        if key in record
+                    }
+            memory["schema_version"] = SPATIAL_MEMORY_SCHEMA_VERSION
+        return recovered
+
     def commit(
         self,
         state: dict,
@@ -102,10 +274,10 @@ class Store:
         from chessx.contexts import project_event
         from chessx.rules.invariants import assert_invariants
 
-        state = copy.deepcopy(state)
         old = self.get(state["world_id"])
         if old["seq"] != expected_seq or old["generation"] != expected_generation:
             raise ConflictError()
+        state = self.recover_spatial_memory(state)
         drafts = drafts or [{"type": "CursorAdvanced", "payload": {}, "audience": []}]
         assert_invariants(state)
         prior_hash = digest(old)
@@ -143,6 +315,10 @@ class Store:
                         "payload": projected,
                     }
                     state["receipts"][pid].append(receipt)
+            # Include map recall in the same durable checkpoint and hash as the
+            # event. Observations use only local visibility, even for silent,
+            # stationary people who have produced no movement receipt.
+            self._record_spatial_sightings(state, state, event["event_id"])
             event["resulting_state_hash"] = digest(state)
             prior_hash = event["resulting_state_hash"]
             records.append((seq, canonical(event), canonical(state)))

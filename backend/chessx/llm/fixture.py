@@ -33,6 +33,7 @@ class FixtureAdapter:
             self.counter,
             None if stage == "bard" else max_output_tokens,
             max_reasoning_tokens=None if stage == "bard" else 1000,
+            private_memory=stage == "memory_compaction",
         )
         return ModelResult(
             validated,
@@ -122,6 +123,8 @@ class FixtureAdapter:
             return {"accept": True}
         if stage in {"vote", "governance", "release_vote"}:
             return {"approve": True}
+        if stage == "memory_compaction":
+            return self._compact_memory(context)
         if stage == "memory":
             return {
                 "memory": context.get("memory", ""),
@@ -150,3 +153,57 @@ class FixtureAdapter:
         raise ModelError(
             "FIXTURE_STAGE_UNSUPPORTED", "Engineering fixture does not support the requested stage."
         )
+
+    def _compact_memory(self, context: dict) -> dict:
+        """Exercise incremental storage contracts, without claiming semantic AI extraction."""
+
+        def bounded(text: str, tokens: int, characters: int) -> str:
+            text = text[:characters]
+            while text and self.counter.count(text) > tokens:
+                text = text[: -max(1, len(text) // 10)]
+            return text
+
+        additions = []
+        for receipt in context.get("source_batch", []):
+            receipt_id = receipt.get("receipt_id")
+            if not isinstance(receipt_id, str) or not receipt_id:
+                continue
+            payload = receipt.get("payload", {})
+            speech = payload.get("speech")
+            if isinstance(speech, str) and speech.strip():
+                speaker = (
+                    payload.get("speaker_name")
+                    or payload.get("speaker_id")
+                    or receipt.get("actor_id", "某人")
+                )
+                text = f"{speaker}曾说：{speech}"
+                kind = "heard_claim"
+            else:
+                channel = receipt.get("channel", "event")
+                text = f"本人在回合{receipt.get('turn', '?')}收到{channel}事件。"
+                kind = "observed_fact"
+            additions.append(
+                {
+                    "kind": kind,
+                    "text": bounded(text, 80, 300),
+                    "salience": "important"
+                    if receipt.get("channel")
+                    in {"DeathCommitted", "BattleClosed", "ObjectTransferred"}
+                    else "normal",
+                    "source_receipt_ids": [receipt_id],
+                }
+            )
+            if len(additions) == 8:
+                break
+        previous = context.get("previous_summary", "")
+        summary = "\n".join([previous] + [item["text"] for item in additions]).strip()
+        return {
+            "summary": bounded(summary, 350, 1400),
+            "additions": additions,
+            "goals_markdown": "",
+            "goal_decision": "keep",
+            "goal_status": "active",
+            "reason_summary": "工程样例仅验证本人批次来源与增量记忆存储，不代表真实模型的信息提取质量。"
+            if context.get("reflect_goals")
+            else "",
+        }

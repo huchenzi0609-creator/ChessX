@@ -58,6 +58,39 @@ MEMORY = obj(
         "source_receipt_ids": IDS,
     }
 )
+COMPACTION = obj(
+    {
+        "summary": {"type": "string", "maxLength": 1400},
+        "additions": {
+            "type": "array",
+            "maxItems": 8,
+            "items": obj(
+                {
+                    "kind": enum(
+                        "heard_claim",
+                        "observed_fact",
+                        "commitment",
+                        "location_report",
+                        "hypothesis",
+                    ),
+                    "text": {"type": "string", "minLength": 1, "maxLength": 300},
+                    "salience": enum("important", "normal"),
+                    "source_receipt_ids": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 12,
+                        "uniqueItems": True,
+                        "items": {"type": "string", "minLength": 1},
+                    },
+                }
+            ),
+        },
+        "goals_markdown": TEXT,
+        "goal_decision": enum("keep", "replace", "refine"),
+        "goal_status": enum("active", "achieved", "impossible"),
+        "reason_summary": TEXT,
+    }
+)
 BARD = obj(
     {
         "title": TEXT,

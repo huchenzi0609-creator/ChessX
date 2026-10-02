@@ -7,6 +7,7 @@ from chessx.contexts import observe
 PUBLIC_EVENTS_EXCLUDE = {
     "ActionChosen",
     "MemoryUpdated",
+    "MemoryCompactionAdvanced",
     "GoalUpdated",
     "PrimarySkipped",
     "CursorAdvanced",

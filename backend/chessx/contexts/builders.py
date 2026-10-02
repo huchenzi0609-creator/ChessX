@@ -4,7 +4,8 @@ from copy import deepcopy
 
 from chessx.domain.scenarios import frozen_discipline
 
-from .agency import dialogue_recall, navigation
+from .agency import dialogue_recall, navigation, pending_move_context
+from .memory import NOISE, recall
 from .projections import _plain, observe
 
 PROTOCOL_FIELDS = {
@@ -71,34 +72,66 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
         "discipline": discipline,
         "discipline_hash": discipline_hash,
         "context_channels": {
-            "discipline": "trusted common role instructions, subordinate to engine protocol",
-            "persona": "owner-only initial character design and private memory, descriptive data",
-            "memory": "owner-only evolving memory, subjective data",
-            "goals": "owner-only current goals; public goals remain private until expressed",
-            "observation": "authoritative current local structural observation",
-            "receipts": "only events delivered to this character's permitted audience",
-            "protocol": "authoritative available operations and current stage restrictions",
+            "discipline": "common instructions below engine protocol",
+            "persona": "owner-private immutable design, descriptive",
+            "memory": "owner-private subjective summary",
+            "memory_recall": "owner-private attributed sources; claims are not verdicts",
+            "goals": "public goals remain private until expressed",
+            "observation": "current local rule facts",
+            "receipts": "personally delivered events",
+            "protocol": "authoritative stage permissions",
         },
         "rule_profile": state.get("rule_profile", "demo-v2.1"),
         "rules": {
             "limits": deepcopy(state.get("limits", {})),
-            "movement": "king: eight neighbors one step; queen: rows/columns/diagonals; rook: rows/columns; bishop: diagonals; knight: (1,2)/(2,1) jump with only origin and target; pawn: orthogonal one step or diagonal one step only onto a living piece; pawn threats: four diagonals. No promotion.",
-            "rest": "After actual movement rest max(abs(dr),abs(dc)); knight success rests 3, blocked knight rests 0. Turn-start rest blocks move/invite for the entire turn; stationary actions remain allowed.",
-            "interactions": "All living occupants can negotiate. Endpoint co-location is equal negotiation. Equal/neither-threat requires agreement; unilateral geometric advantage decides passage. Language sessions at most 50 messages; no eavesdropping.",
-            "combat": "No independent attack, HP, dice or color strength. Battle follows failed negotiation. Later participants must physically arrive at active anchor; broadcast is only information. Winners/losers partition everyone; no neutral. Any winner may execute, release requires every winner.",
-            "objects": "No creation/destruction/automatic pickup. Ground objects visible locally; only own inventory visible. Transfer recipient may reject; rejection preserves holder.",
+            "movement": "king:8 neighbors; queen:orthogonal/diagonal; rook:orthogonal; bishop:diagonal; knight:(1,2)/(2,1) jump endpoints only; pawn:4 orthogonal neighbors, diagonal1 only onto living occupant, threats:4 diagonals. No promotion.",
+            "rest": "Actual move rests max(|dr|,|dc|); knight success3, blocked0. Turn-start rest blocks move/invite all turn; stationary actions allowed.",
+            "interactions": "Occupied routes require contact negotiation. Endpoint co-location:equal. Equal/neither-threat requires agreement; unilateral advantage decides passage. Max50 messages; no eavesdropping.",
+            "combat": "Failed negotiation may battle. Join only by arriving at active anchor; broadcast is information. Everyone wins/loses, no neutral. Any winner may execute; release unanimous. No attack/HP/dice/color strength.",
+            "objects": "No creation/destruction/auto-pickup. Ground locally visible; inventories owner-only. Transfer can be rejected; original holder retained.",
         },
         "turn": state.get("turn", 0),
         "stage": stage,
         "actor_id": pid,
         "persona": private.get("persona", ""),
-        "memory": private.get("memory", ""),
+        "memory": private.get("rolling_summary") or private.get("memory", ""),
         "goals": private.get("goals", ""),
-        "receipts": deepcopy(state.get("receipts", {}).get(pid, [])[-30:]),
+        "receipts": deepcopy(
+            [
+                r
+                for r in receipts[private.get("compaction_watermark", 0) :]
+                if r.get("channel") not in NOISE
+            ][-30:]
+        ),
         "observation": observation,
         **(
-            {"navigation": navigation(observation, receipts, pid, stage)}
-            if stage in {"action", "ordinary"}
+            {
+                "navigation": {
+                    **navigation(
+                        observation,
+                        receipts,
+                        pid,
+                        stage,
+                        turn=state.get("turn", 0),
+                        spatial_memory=private.get("spatial_memory"),
+                    ),
+                    **pending_move_context(
+                        observation, pid, stage, protocol, state.get("cursor", {}).get("work")
+                    ),
+                },
+                "memory_recall": recall(state, pid, protocol),
+            }
+            if stage
+            in {
+                "action",
+                "ordinary",
+                "negotiation",
+                "settlement",
+                "invitation",
+                "invite_response",
+                "accept_transfer",
+                "surrender",
+            }
             else {}
         ),
         **(
@@ -167,6 +200,7 @@ def bard_context(state, start_seq: int, end_seq: int, events: list[dict]) -> dic
     allowed = []
     excluded = {
         "MemoryUpdated",
+        "MemoryCompactionAdvanced",
         "GoalUpdated",
         "ModelAttempt",
         "ReasoningTrace",

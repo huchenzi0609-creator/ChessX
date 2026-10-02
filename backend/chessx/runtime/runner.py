@@ -27,6 +27,7 @@ from chessx.rules.actions import apply_primary, create_transfer_offer, resolve_t
 from chessx.rules.geometry import begin_turn, legal_move, rest_at_start, visible_positions
 from chessx.runtime import schemas
 from chessx.runtime.combat import CombatMixin
+from chessx.runtime.compaction import CompactionMixin
 from chessx.runtime.dialogue import DialogueMixin
 from chessx.runtime.dialogue_race import DialogueRaceMixin
 from chessx.runtime.movement import MovementMixin
@@ -40,7 +41,9 @@ class BudgetError(Exception):
     code = "RUN_BUDGET_EXCEEDED"
 
 
-class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, StoryMixin):
+class WorldRunner(
+    CompactionMixin, MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, StoryMixin
+):
     def __init__(self, store: Store, settings):
         self.store = store
         self.settings = settings
@@ -326,6 +329,9 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
             else STAGE_OUTPUT_LIMITS.get(stage, 512)
         )
         maximum = output_reserve
+        input_limit = self.settings.character_input_limit if pid is not None else None
+        if stage == "memory_compaction":
+            input_limit = min(6144, self.settings.character_input_limit)
         context = fit_context(
             stage,
             context,
@@ -333,7 +339,7 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
             adapter.counter,
             max_output_tokens=maximum,
             model_capacity=self.settings.context_capacity,
-            input_limit=self.settings.character_input_limit if pid is not None else None,
+            input_limit=input_limit,
         )
         if isinstance(adapter, ProviderAdapter) and not adapter._probed:
             await self.ensure_probe(state, adapter)
@@ -351,7 +357,7 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
                 adapter.counter,
                 max_output_tokens=output_reserve,
                 model_capacity=self.settings.context_capacity,
-                input_limit=self.settings.character_input_limit if pid is not None else None,
+                input_limit=input_limit,
             )
             estimated = request_input_tokens(stage, context, schema, adapter.counter, maximum)
             if stage == "bard":
@@ -509,7 +515,11 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
         state = copy.deepcopy(before)
         self._operation = None
         try:
-            events = await self.transition(state)
+            # Commit one covered prefix before any further character decisions.
+            # The simulation cursor does not advance during compaction.
+            events = await self.compact_before_step(state)
+            if events is None:
+                events = await self.transition(state)
             self._audiences(before, state, events)
             return self.store.commit(
                 state,
@@ -694,7 +704,7 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
         work = cursor.get("work")
         if work is None:
             protocol = {
-                "instruction": "Choose one concrete legal action for your own goals in this spatial world. Read navigation and your recent heard speech: saying you will go somewhere is not movement. A conversation does NOT require wait and does NOT require permission to depart; a legal move leaves it automatically. If a destination/person is unknown, you may explore or use your own uncertain remembered reports, never hidden coordinates. Consider whether another wait advances your purpose. Waiting remains a valid personal choice; no compulsory travel. During turn-start rest, move/invite are forbidden. Color is only a label; no independent attack, promotion, remote join, object creation/destruction, HP or rewards.",
+                "instruction": "Choose one legal primary action for your own purpose. Read navigation and memory_recall; promised travel requires a real move. Known places and reported directions can guide searching; hidden live coordinates are unknown. A legal move leaves conversation without permission. Rest blocks move/invite. Wait remains valid; no compulsory travel or fabricated conflict.",
                 "mode": state["mode"],
             }
             result = await self.ask(
@@ -761,88 +771,6 @@ class WorldRunner(MovementMixin, DialogueMixin, DialogueRaceMixin, CombatMixin, 
             return events
         events = apply_primary(state, pid, work["intent"])
         self.finish_primary(state)
-        return events
-
-    async def memory_step(self, state):
-        index = state["cursor"]["actor_index"]
-        if index >= len(state["actor_order"]):
-            state["phase"] = "END"
-            state["cursor"] = {}
-            return []
-        pid = state["actor_order"][index]
-        piece = state["pieces"][pid]
-        own = state["private"][pid]
-        receipt_count = len(state["receipts"][pid])
-        recent = state["receipts"][pid][own.get("memory_watermark", 0) :]
-        triggered = any(
-            r["channel"]
-            in {"DeathCommitted", "BattleClosed", "ConversationClosed", "LoserReleased"}
-            for r in recent
-        )
-        if not piece["alive"] or not (
-            state["turn"] % 5 == 0
-            or triggered
-            or receipt_count - own.get("memory_watermark", 0) > 30
-        ):
-            state["cursor"]["actor_index"] += 1
-            return []
-
-        def validate(result):
-            ids = {r["receipt_id"] for r in state["receipts"][pid]}
-            if not set(result["source_receipt_ids"]).issubset(ids):
-                raise RuleError(
-                    "MEMORY_SOURCE_INVALID", "Memory may cite only receipts personally received"
-                )
-            if result["goal_decision"] == "replace" and result["goal_status"] not in {
-                "achieved",
-                "impossible",
-            }:
-                raise RuleError(
-                    "GOAL_REPLACEMENT_INVALID",
-                    "Replacing goals requires your own achieved or permanently impossible determination",
-                )
-
-        result = await self.ask(
-            state,
-            pid,
-            "memory",
-            f"turn:{state['turn']}:memory:{pid}",
-            schemas.MEMORY,
-            {
-                "instruction": "Revise only your own remembered account. Preserve disagreements. keep/replace/refine your textual goals; missing information alone is not permanent impossibility. Cite only receipts provided."
-            },
-            validator=validate,
-        )
-        own["memory"] = result["memory"]
-        own["memory_version"] += 1
-        own["memory_watermark"] = receipt_count
-        events = [
-            {
-                "type": "MemoryUpdated",
-                "actor_id": pid,
-                "payload": {
-                    "version": own["memory_version"],
-                    "source_receipt_ids": result["source_receipt_ids"],
-                },
-                "audience": [pid],
-            }
-        ]
-        if result["goal_decision"] != "keep":
-            own["goals"] = result["goals_markdown"]
-            own["goal_version"] += 1
-            events.append(
-                {
-                    "type": "GoalUpdated",
-                    "actor_id": pid,
-                    "payload": {
-                        "version": own["goal_version"],
-                        "decision": result["goal_decision"],
-                        "reason_summary": result["reason_summary"],
-                    },
-                    "audience": [pid],
-                }
-            )
-        state["cursor"]["actor_index"] += 1
         return events
 
     def _audiences(self, before, state, events):

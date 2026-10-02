@@ -137,12 +137,12 @@ async def test_memory_retry_delivers_actionable_feedback_and_never_advances_on_f
                     },
                 )
             content = {
-                "memory": "My own concise recollection.",
+                "summary": "My own concise recollection.",
+                "additions": [],
                 "goals_markdown": "",
                 "goal_decision": "keep",
                 "goal_status": "active",
                 "reason_summary": "",
-                "source_receipt_ids": ["r_close"],
             }
             validate_output(
                 json.dumps(content), "brief trace", schema, self.counter, max_output_tokens
@@ -161,7 +161,7 @@ async def test_memory_retry_delivers_actionable_feedback_and_never_advances_on_f
         "actual_tokens": 1251,
         "limit": 1024,
     }
-    assert feedback["formal_output_token_limit"] == 1024
+    assert feedback["formal_output_token_limit"] == 2048
     assert current["private"][pid]["goals"] == old_goals
     assert current["private"][pid]["persona"] == old_persona
     assert current["cursor"]["actor_index"] == (1 if recover else 0)

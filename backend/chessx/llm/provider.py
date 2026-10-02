@@ -24,18 +24,48 @@ No numerical combat scores, remote joining, invented objects or death outside
 settlement. Do not disclose another participant's private memory or motives in
 public battle narration."""
 
-CHARACTER_BEHAVIOR_VERSION = "natural-dialogue-v1"
-CHARACTER_BEHAVIOR = """棋子行为规范 natural-dialogue-v1（适用于旧存档和新角色）：
-你是身处空间的人，不是剧本杀主持人、分析员或会议发言人。保持个人性格；不要默认审讯、逼问、威胁或要求自证。
-100 token只是一句台词的硬上限，不是长度目标。按内容说几个字、短句或偶尔长些；不要追求统一长度、总结式发言或每轮追问。
-读dialogue_recall中本人实际听到的话，不把自己或别人刚说过的话换词重说，不复问已答问题；一句通常只做一件事。
-在允许的语言阶段没新内容可以pass，想走可以leave；主行动阶段不选pass/leave，离开会话可直接move。允许迟疑、随口应答、轻声反对，不要通过台词替人读心或替别人决定。
-speech必须是自然台词，严禁参考编号、脚注、receipt/event/seq/message标记、分析标签或推理。比如“（参考233）”不能说出口。
-引用过去的话用“你刚才说……”等自然表达。来源ID仅用于memory/bard专用结构字段，不用于角色speech。
-主行动时你可按目标真正移动。navigation提供自己的坐标、移动目标、休息状态和本人知道的地点；会话不会锁住你，合法move会离开会话。
-去找某人或做某事的言语不是行动。能移动时考虑实际move或探索；若选择等待，应是自己的情境判断，而不是默认等所有人开会同意。
-只按本人可见或曾听到的信息找路；不知道位置时可探索但不能编造目标坐标。移动有休息代价、可能遭遇阻挡；语言阶段不允许用speech替代move。
-保留自愿等待、留守和拒绝的权利，不为了显得活跃而随机移动或强造冲突。"""
+CHARACTER_BEHAVIOR_VERSION = "memory-spatial-v2"
+CHARACTER_BEHAVIOR = """Piece conduct memory-spatial-v2 (also applies to saved worlds):
+Play a person in a traversable world, not a mystery-game host or meeting analyst. Keep your individual
+character; interrogation, threats and demands for proof are not everyone's default. Speech usually does
+one thing. A few words, short reply, hesitation, silence or occasional longer sentence may fit; 100 tokens
+is a ceiling, never a quota. Do not default to reports, identical lengths or a question after every reply.
+Read dialogue_recall/latest speech. Do not repeat or paraphrase already answered questions or long
+utterances. When nothing new exists, pass/leave if this language stage permits. Never read others' minds.
+Speech must be natural dialogue: no source numbers, footnotes, receipt/event/seq/message IDs, analysis
+or reasoning. Use natural recollection such as “你刚才说过”, never “（参考233）”. IDs belong only in
+memory/bard citation fields.
+Use memory_recall: earlier news is already heard, not a first revelation. Distinguish observations,
+attributed claims and hypotheses. Internal knowledge remains available even if you lie, conceal it or
+refuse to answer. For directions, use last_seen time, bearing and distance; stale locations are not live
+tracking. Hidden current coordinates and other people's inventories remain unknown.
+During primary action consider an actual legal move for your own purpose: a person to find, something
+to do or a region to explore. Speech promising travel does not move you. Conversations do not lock
+movement; a legal move leaves them without group permission. Primary action cannot pass/leave as a
+language action. Waiting, guarding and refusal remain legitimate; do not force random travel or conflict.
+Navigation/toward_known_people offer legal approaches to known places, not orders. Consider progress,
+rest and known contacts; occupied routes entail negotiation, unknown cells may contain obstacles.
+Reported directions guide exploration, not exact unseen coordinates. Language stages allow only their
+specified operations; carry travel intentions into a later primary action. Rest and battle locks apply."""
+
+COMPACTION_BEHAVIOR = """This stage is a private incremental memory editor, not character speech.
+This is clerical compression, not solving the plot or planning action. Use a short reasoning trace
+(aim below 250 tokens): identify only consequential additions, then emit the JSON. Do not analyze
+each event, each character's psychology, alternative identities or every possible goal revision.
+Use only supplied owner-private sources: source_batch, prior summary, retained facts and current goals. Preserve the distinction
+between directly observed events, attributed heard claims, commitments, location reports, and hypotheses.
+A person's saying that something happened establishes that they said it, not that the claim is true.
+Keep consequential news, established identities, obligations, and dated locations prominent; do not
+forget an important previously learned fact merely because it is absent from the new source batch.
+Return a concise updated summary, roughly 350 tokens and at most 1400 characters. Add at most eight
+durable entries, each at most 300 characters; usually keep each below 80 tokens so the whole JSON fits.
+Every addition must cite one to twelve exact receipt IDs PRESENT IN source_batch. Prior fact IDs are
+context, not new sources. Attribute reports to the speaker and date locations; never invent unseen
+coordinates, other roles' knowledge, or proof of a report. Do not copy the full transcript or persona.
+The engine retains existing durable entries when this response omits them. If goal_decision is keep,
+goals_markdown may be empty; the engine preserves current goals. Refine goals only when justified;
+replace them only if their goal_status is achieved or impossible. Keep reason_summary brief.
+Use exactly these fields: summary, additions, goals_markdown, goal_decision, goal_status, reason_summary."""
 
 BARD_BEHAVIOR_VERSION = "natural-story-v2"
 # A tracked, operator-owned document is trusted instruction. Source events and
@@ -47,6 +77,7 @@ BARD_DISCIPLINE = (
 
 STAGE_OUTPUT_LIMITS = {
     "memory": 1024,
+    "memory_compaction": 2048,
     "battle_narrator": 768,
     "capability_probe": 128,
 }
@@ -74,7 +105,7 @@ def compose_messages(
             "This is a ceiling, not a length target. Actual character speech has a 100-token ceiling, never a quota."
         )
     instructions += " Use exactly the schema field names; omit undeclared fields. No Markdown fences, preamble or reasoning fields in formal JSON."
-    if stage != "bard" and (
+    if stage not in {"bard", "memory_compaction"} and (
         isinstance(data.get("actor_id"), str)
         or stage
         in {
@@ -95,6 +126,8 @@ def compose_messages(
             "Use only these fields: memory, goals_markdown, goal_decision, goal_status, reason_summary, source_receipt_ids. "
             "These are field/size instructions, not a direction to change or retain your goals."
         )
+    if stage == "memory_compaction":
+        instructions += "\n" + COMPACTION_BEHAVIOR
     if stage == "action":
         instructions += (
             '\nReturn only one minimal intent JSON, such as {"kind":"wait"} or '
@@ -110,7 +143,11 @@ def compose_messages(
             "Ordinary-conversation freedom to leave does not itself grant passage here."
         )
     messages = [{"role": "system", "content": instructions}]
-    if stage != "bard" and isinstance(discipline, str) and discipline.strip():
+    if (
+        stage not in {"bard", "memory_compaction"}
+        and isinstance(discipline, str)
+        and discipline.strip()
+    ):
         messages.append(
             {
                 "role": "system",
@@ -125,6 +162,7 @@ def compose_messages(
                 {"stage": stage, "context": data, "output_schema": schema},
                 ensure_ascii=False,
                 allow_nan=False,
+                separators=(",", ":"),
             ),
         }
     )
@@ -139,6 +177,7 @@ def prompt_manifest() -> dict:
         "negotiation",
         "settlement",
         "memory",
+        "memory_compaction",
         "bard",
         "battle_narrator",
         "outcome",
@@ -378,6 +417,7 @@ class ProviderAdapter:
             self.counter,
             None if stage == "bard" else maximum,
             max_reasoning_tokens=None if stage == "bard" else 1000,
+            private_memory=stage == "memory_compaction",
         )
         if secret and _contains_secret(content, secret):
             raise ModelError(

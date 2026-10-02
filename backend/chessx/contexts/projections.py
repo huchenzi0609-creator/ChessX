@@ -20,6 +20,7 @@ PIECE_FIELDS = (
 EVENT_FIELDS = ("id", "event_id", "world_id", "seq", "turn", "type", "kind", "actor_id")
 PRIVATE_EVENTS = {
     "MemoryUpdated",
+    "MemoryCompactionAdvanced",
     "GoalUpdated",
     "ReasoningTrace",
     "ModelAttempt",

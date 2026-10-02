@@ -131,6 +131,10 @@ def create_world(scenario: Scenario, personas: dict[str, str], world_id: str) ->
                 "memory": "",
                 "goals": initial_goals(personas.get(piece.id, piece.private_text or "")),
                 "memory_version": 0,
+                "rolling_summary": "",
+                "compaction_watermark": 0,
+                "long_term_memory": {},
+                "spatial_memory": {"schema_version": 1, "seen_people": {}},
                 "goal_version": 0,
             }
             for piece in scenario.pieces

@@ -2,7 +2,16 @@
 
 from copy import deepcopy
 
-from chessx.rules.geometry import can_threaten, inside_board
+from chessx.rules.geometry import can_threaten
+
+from .spatial import (
+    approach_options,
+    movement_options,
+    spatial_recall,
+)
+from .spatial import (
+    pending_move_context as pending_move_context,
+)
 
 
 def receipt_event(receipt: dict) -> tuple[str, dict, dict]:
@@ -43,7 +52,15 @@ def dialogue_recall(receipts: list[dict], pid: str, conversation_id: str | None 
     }
 
 
-def navigation(observation: dict, receipts: list[dict], pid: str, stage: str) -> dict:
+def navigation(
+    observation: dict,
+    receipts: list[dict],
+    pid: str,
+    stage: str,
+    *,
+    turn: int | None = None,
+    spatial_memory: dict | None = None,
+) -> dict:
     own, board = observation["self"], observation["board"]
     origin = own["position"]
     # Geometry may cover unexplored cells. Occupancy is deliberately NOT read
@@ -68,37 +85,6 @@ def navigation(observation: dict, receipts: list[dict], pid: str, stage: str) ->
                 )
                 if permitted:
                     targets.append([row, col])
-    known = {}
-    for receipt in receipts:
-        channel, event, payload = receipt_event(receipt)
-        if channel not in {"MoveCommitted", "PieceMoved", "DeathCommitted"}:
-            continue
-        who = payload.get("piece_id", event.get("actor_id"))
-        position = payload.get(
-            "position", payload.get("actual_to", payload.get("last_visible_position"))
-        )
-        if (
-            isinstance(who, str)
-            and who != pid
-            and isinstance(position, dict)
-            and inside_board({"board": board}, position)
-        ):
-            known[who] = {
-                "piece_id": who,
-                "position": deepcopy(position),
-                "current_visible": False,
-                "last_seen_turn": event.get("turn"),
-                "status_at_sighting": "dead" if channel == "DeathCommitted" else "alive",
-            }
-    for piece in observation["pieces"]:
-        if piece["id"] != pid:
-            known[piece["id"]] = {
-                "piece_id": piece["id"],
-                "name": piece["name"],
-                "position": deepcopy(piece["position"]),
-                "current_visible": True,
-                "status_at_sighting": "alive",
-            }
     waits = 0
     for receipt in reversed(receipts):
         channel, event, payload = receipt_event(receipt)
@@ -115,16 +101,22 @@ def navigation(observation: dict, receipts: list[dict], pid: str, stage: str) ->
         if channel != "PieceWaited":
             break
         waits += 1
+    spatial = spatial_recall(observation, receipts, pid, turn=turn, spatial_memory=spatial_memory)
     return {
         "current_position": deepcopy(origin),
-        "coordinate_system": "Zero-based [row,col]; rows increase downward, columns rightward. The whole board is a traversable space, not a meeting room.",
+        "coordinate_system": "Zero-based [row,col]. 北=north=row decreases; 南=south=row increases; 东=east=col increases; 西=west=col decreases. The board is a traversable space.",
+        "distance_semantics": "distance_steps=max(|dr|,|dc|), not route time. Bearings use your current position; old sightings may be stale.",
         "can_choose_move_in_this_stage": stage == "action" and own["can_move"],
         "can_move_at_primary_phase": own["can_move"],
         "rest_at_turn_start": own["rest_at_start"],
         "geometric_move_targets": targets,
         "target_format": "Each pair is [row,col]; emit move with target={row:R,col:C}. Targets are unranked, exclude waiting, and do NOT guarantee an unobstructed path.",
-        "known_locations": list(known.values()),
-        "unseen_locations": "Unknown. Use your own remembered reports cautiously or explore; nobody supplies hidden live coordinates or a route to an unseen person.",
+        "movement_options": movement_options(observation, targets),
+        "movement_options_scope": "Up to 12 examples; complete targets above. Contacts require negotiation; unknown cells may be occupied. Choose by your own purpose.",
+        **spatial,
+        "toward_known_people": approach_options(observation, targets, spatial["known_locations"]),
+        "toward_known_people_scope": "Optional legal next steps toward YOUR remembered place, not mandatory targets or live tracking. distance_before/after are geometric. already_visible people may be invited without moving into their occupied cell. A past sighting may now be empty; unknown path cells are not guaranteed free.",
+        "unseen_locations": "last_seen is your dated sighting, not live tracking. Reports are unverified; unseen current positions are unknown.",
         "conversation_blocks_movement": False,
         "movement_leaves_conversation": True,
         "recent_consecutive_waits": waits,
