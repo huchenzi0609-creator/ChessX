@@ -15,6 +15,8 @@ export default function Stories({
   const [error, setError] = useState<string | null>(null);
   const stories = values(world.stories);
   const segments = values(world.segments);
+  const executing = world.lifecycle === 'RUNNING';
+  const pendingBard = world.phase === 'BARD' && segments.at(-1)?.status !== 'paused';
   const pending = segments.filter(
     (segment) => !stories.some((story) => story.segment_id === (segment.segment_id ?? segment.id)),
   );
@@ -48,9 +50,17 @@ export default function Stories({
             {String(story.segment_id ?? '')}
           </span>
           <h3>{asText(story.title ?? `第 ${index + 1} 段`)}</h3>
+          {story.composition === 'ordered_chapters' && (
+            <p className="muted">分章成稿 · {asText(story.chapter_count)}章</p>
+          )}
           {values(story.paragraphs as RecordData[] | undefined).length ? (
             values(story.paragraphs as RecordData[]).map((paragraph, paragraphIndex) => (
               <div className="story-paragraph" key={paragraphIndex}>
+                {values(story.chapters as RecordData[] | undefined)
+                  .filter((chapter) => chapter.paragraph_start === paragraphIndex)
+                  .map((chapter, chapterIndex) => (
+                    <h4 key={chapterIndex}>{asText(chapter.title)}</h4>
+                  ))}
                 <p className="story-prose">{asText(paragraph.text)}</p>
                 <References references={paragraph.event_refs} onReference={onReference} />
               </div>
@@ -64,10 +74,16 @@ export default function Stories({
           {story.segment_id === (segments.at(-1)?.segment_id ?? segments.at(-1)?.id) && (
             <button
               className="story-regenerate"
-              disabled={busy !== null}
+              disabled={busy !== null || executing}
               onClick={() => void generate(story)}
             >
-              {busy === story.segment_id ? '正在请求…' : '重编本段'}
+              {busy === story.segment_id
+                ? '正在请求…'
+                : executing && world.phase === 'BARD'
+                  ? '正在编排…'
+                  : pendingBard
+                    ? '继续编排'
+                    : '重编本段'}
             </button>
           )}
         </article>
@@ -76,12 +92,21 @@ export default function Stories({
         <article key={String(segment.segment_id ?? segment.id ?? index)} className="story-card">
           <h3>片段 {asText(segment.segment_id ?? segment.id)}</h3>
           <p className="muted">
-            {segment.status === 'active'
-              ? '未完片段；生成的稿件不会推进模拟。'
-              : '故事待生成或待重试。'}
+            {world.phase && world.phase !== 'BARD'
+              ? '请先完成当前分段；故事编排不会覆盖尚未完成的行动。'
+              : '故事待生成或待继续；已完成章节会保留。'}
           </p>
-          <button disabled={busy !== null} onClick={() => void generate(segment)}>
-            {busy === String(segment.segment_id ?? segment.id) ? '正在请求…' : '编排故事'}
+          <button
+            disabled={busy !== null || executing || (!!world.phase && world.phase !== 'BARD')}
+            onClick={() => void generate(segment)}
+          >
+            {busy === String(segment.segment_id ?? segment.id)
+              ? '正在请求…'
+              : executing && world.phase === 'BARD'
+                ? '正在编排…'
+                : segment.source_end_seq !== undefined
+                  ? '继续编排'
+                  : '编排故事'}
           </button>
         </article>
       ))}

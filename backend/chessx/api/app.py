@@ -427,19 +427,25 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             raise HTTPException(409, "ONLY_LATEST_SEGMENT_SUPPORTED")
         if any(not t.done() for t in app.state.runner.tasks.values()):
             raise HTTPException(409, "WORLD_BUSY")
-        state["phase"] = "BARD"
-        state["cursor"] = {"story_done": False}
-        state["lifecycle"] = "PAUSED"
         segment = state["segments"][-1]
+        resuming = state["phase"] == "BARD" and not state.get("cursor", {}).get("story_done")
+        if not resuming and sid not in state["stories"]:
+            # Never replace a partially executed simulation cursor with a story
+            # job just because its unfinished segment is visible in the UI.
+            raise HTTPException(409, "STORY_SEGMENT_NOT_READY")
+        if not resuming:
+            state["phase"] = "BARD"
+            state["cursor"] = {"story_done": False}
+            segment["story_revision"] = segment.get("story_revision", 0) + 1
+            segment.pop("story_job", None)
+        state["lifecycle"] = "PAUSED"
         segment["status"] = "running"
-        segment["story_revision"] = segment.get("story_revision", 0) + 1
-        segment.pop("story_job", None)
         state["target_turn"] = state["completed_turn"]
         app.state.store.commit(
             state,
             [
                 {
-                    "type": "StoryRegenerationRequested",
+                    "type": "StoryResumeRequested" if resuming else "StoryRegenerationRequested",
                     "payload": {"segment_id": sid},
                     "audience": [],
                 }

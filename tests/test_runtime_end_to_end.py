@@ -8,6 +8,7 @@ import pytest
 from chessx.api.app import create_app
 from chessx.config import ROOT, Settings
 from chessx.domain.scenarios import create_world, load_scenario
+from chessx.llm import FixtureAdapter
 from chessx.runtime.runner import WorldRunner
 from chessx.storage import Store
 from fastapi.testclient import TestClient
@@ -205,3 +206,100 @@ def test_story_regeneration_keeps_world_clock_and_versions(tmp_path):
             (wid,),
         ).fetchall()
         assert all(record["n"] == 1 for record in slots)
+
+
+def test_story_endpoint_resumes_pending_chapters_instead_of_resetting_them(tmp_path):
+    with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
+        wid = create_sample(client)
+        original = run(client, wid, "initial", turns=1)
+        sid = next(iter(original["stories"]))
+
+        def seed():
+            store = client.app.state.store
+            runner = client.app.state.runner
+            state = store.get(wid)
+            segment = state["segments"][-1]
+            events = runner._story_input(state, segment, runner._story_events(state, segment))[
+                "events"
+            ]
+            assert len(events) >= 2
+            first = {
+                "title": "Existing chapter",
+                "paragraphs": [
+                    {
+                        "text": "EXISTING_COMPLETE_CHAPTER",
+                        "event_refs": [events[0]["id"]],
+                        "claim_kind": "event_based",
+                    }
+                ],
+            }
+            state.update(
+                phase="BARD",
+                lifecycle="PAUSED_ERROR",
+                cursor={"story_done": False},
+                error={"code": "CONTEXT_BUDGET_EXCEEDED"},
+            )
+            segment.update(
+                status="running",
+                story_revision=1,
+                story_job={
+                    "blocks": [[events[0]], [events[1]]],
+                    "index": 1,
+                    "summaries": [first],
+                    "chunked": True,
+                },
+            )
+            store.commit(
+                state, [], expected_seq=state["seq"], expected_generation=state["generation"]
+            )
+            entered, release = asyncio.Event(), asyncio.Event()
+            contexts = []
+
+            class StoryAdapter(FixtureAdapter):
+                async def generate(self, stage, context, schema, *, max_output_tokens=512):
+                    if stage == "bard":
+                        contexts.append(deepcopy(context))
+                        if len(contexts) == 1:
+                            entered.set()
+                            await release.wait()
+                    return await super().generate(
+                        stage, context, schema, max_output_tokens=max_output_tokens
+                    )
+
+            runner.adapters[wid] = StoryAdapter()
+            return first, events[1]["id"], entered, release, contexts, segment["source_end_seq"]
+
+        first, next_id, entered, release, contexts, end_seq = client.portal.call(seed)
+        response = client.post(f"/api/worlds/{wid}/segments/{sid}/story")
+        assert response.status_code == 202
+
+        async def wait_entered():
+            await asyncio.wait_for(entered.wait(), 2)
+
+        client.portal.call(wait_entered)
+        pending = client.app.state.store.get(wid)["segments"][-1]
+        assert pending["story_revision"] == 1
+        assert pending["story_job"]["index"] == 1
+        assert pending["story_job"]["summaries"] == [first]
+        client.portal.call(release.set)
+        final = wait_command(client, wid, response.json()["command_id"])
+        assert final["lifecycle"] == "PAUSED_SEGMENT"
+        assert final["completed_turn"] == original["completed_turn"] == 1
+        assert final["pieces"] == original["pieces"]
+        assert final["stories"][sid]["revision"] == 1
+        assert final["stories"][sid]["source_end_seq"] == end_seq
+        assert [event["id"] for event in contexts[0]["events"]] == [next_id]
+        assert contexts[1]["summaries"][0] == first
+
+
+def test_story_request_cannot_overwrite_an_unfinished_simulation_cursor(tmp_path):
+    with TestClient(create_app(Settings(data_dir=tmp_path))) as client:
+        wid = create_sample(client)
+        paused = run(client, wid, "one-event", kind="step_event")
+        sid = paused["segments"][-1]["id"]
+        before = client.app.state.store.get(wid)
+        assert before["phase"] == "PRIMARY"
+        response = client.post(f"/api/worlds/{wid}/segments/{sid}/story")
+        assert response.status_code == 409
+        assert response.json()["detail"] == "STORY_SEGMENT_NOT_READY"
+        assert client.app.state.store.get(wid) == before

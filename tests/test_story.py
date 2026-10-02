@@ -183,7 +183,7 @@ async def test_oversized_single_event_pauses_without_losing_fact():
     assert current["private"] == original["private"]
 
 
-async def test_oversized_composition_preserves_completed_blocks_and_pauses():
+async def test_oversized_composition_finishes_as_complete_ordered_chapters_without_extra_calls():
     records = [event(index, text="detail " * 300) for index in range(1, 12)]
     runner, current = Harness(records, capacity=4096, large_summaries=True), state(11)
     await runner.bard_step(current)
@@ -191,10 +191,140 @@ async def test_oversized_composition_preserves_completed_blocks_and_pauses():
     for _ in job["blocks"]:
         await runner.bard_step(current)
     before = deepcopy(job)
-    with pytest.raises(ModelError) as error:
-        await runner.bard_step(current)
-    assert error.value.code == "CONTEXT_BUDGET_EXCEEDED"
-    assert job == before and len(runner.calls) == len(job["blocks"])
+    drafts = await runner.bard_step(current)
+    assert drafts[0]["type"] == "BardCreated"
+    story = current["stories"]["s1"]
+    assert story["composition"] == "ordered_chapters"
+    assert story["chapter_count"] == len(before["summaries"])
+    assert story["paragraphs"] == [
+        p for summary in before["summaries"] for p in summary["paragraphs"]
+    ]
+    assert len(runner.calls) == len(before["blocks"])
+    assert current["lifecycle"] == "PAUSED_SEGMENT"
+    assert current["completed_turn"] == 1
+
+
+async def test_legacy_oversized_pending_block_repartitions_without_rewriting_completed_chapter():
+    records = [event(index, text="detail " * 450) for index in range(1, 8)]
+    runner, current = Harness(records, capacity=4096), state(7)
+    projected = runner._story_input(current, {"started_seq": 1, "source_end_seq": 7}, records)[
+        "events"
+    ]
+    first = {
+        "title": "Already written",
+        "paragraphs": [
+            {
+                "text": "PREVIOUS_COMPLETE_CHAPTER",
+                "event_refs": ["world:1"],
+                "claim_kind": "event_based",
+            }
+        ],
+    }
+    segment = current["segments"][0]
+    segment["source_end_seq"] = 7
+    segment["story_job"] = {
+        "blocks": [projected[:1], projected[1:]],
+        "index": 1,
+        "summaries": [deepcopy(first)],
+        "chunked": True,
+    }
+    assert await runner.bard_step(current) == []
+    job = segment["story_job"]
+    assert job["index"] == 1 and job["summaries"] == [first]
+    assert len(job["blocks"]) > 2
+    assert [record["id"] for block in job["blocks"] for record in block] == [
+        f"world:{i}" for i in range(1, 8)
+    ]
+    assert not runner.calls
+    await complete(runner, current)
+    assert all(
+        "world:1" not in {e["id"] for e in context["events"]}
+        for _, context in runner.calls
+        if "summaries" not in context
+    )
+    assert segment["source_end_seq"] == 7
+
+
+def test_story_planning_counts_execution_stage_and_leaves_retry_headroom():
+    from chessx.contexts.budgets import request_input_tokens
+    from chessx.runtime.schemas import BARD
+    from chessx.runtime.story import STORY_RETRY_RESERVE
+
+    runner, current = Harness([event(1)], capacity=4096), state(1)
+    source = runner._story_input(current, {"started_seq": 1, "source_end_seq": 1}, [event(1)])
+    assert "stage" not in source
+    fitted = runner._fit_story(current, source)
+    assert fitted["stage"] == "bard" and "stage" not in source
+    actual = request_input_tokens("bard", fitted, BARD, runner.model.counter)
+    assert (
+        actual + runner.settings.context_capacity // 3 + STORY_RETRY_RESERVE + 1000
+        <= runner.settings.context_capacity
+    )
+
+
+async def test_greedy_old_boundary_that_fits_without_stage_is_split_before_execution():
+    from chessx.contexts.budgets import request_input_tokens
+    from chessx.runtime.schemas import BARD
+
+    runner, current = Harness([], capacity=4096), state(2)
+    segment = {"started_seq": 1, "source_end_seq": 2}
+    old_limit = 4096 - 4096 // 3 - 1000
+    low, high = 0, 3000
+    while low < high:
+        words = (low + high + 1) // 2
+        records = [event(1, text="word " * 500), event(2, text="word " * words)]
+        source = runner._story_input(current, segment, records)
+        if request_input_tokens("bard", source, BARD, runner.model.counter) <= old_limit:
+            low = words
+        else:
+            high = words - 1
+    records = [event(1, text="word " * 500), event(2, text="word " * low)]
+    source = runner._story_input(current, segment, records)
+    assert request_input_tokens("bard", source, BARD, runner.model.counter) <= old_limit
+    source["stage"] = "bard"
+    assert request_input_tokens("bard", source, BARD, runner.model.counter) > old_limit
+    blocks = runner._story_blocks(current, segment, records)
+    assert len(blocks) == 2
+    for block in blocks:
+        fitted = runner._fit_story(current, runner._story_input(current, segment, block))
+        fitted["protocol"] = {
+            "validation_feedback": {
+                "code": "MODEL_OUTPUT_INVALID",
+                "instruction": "Return legal complete JSON, use only the supplied original source event IDs.",
+            }
+        }
+        from chessx.contexts.budgets import fit_context
+
+        assert (
+            fit_context(
+                "bard",
+                fitted,
+                BARD,
+                runner.model.counter,
+                max_output_tokens=4096 // 3,
+                model_capacity=4096,
+            )
+            == fitted
+        )
+
+
+async def test_assembled_chapters_still_reject_invalid_original_source_references():
+    runner, current = Harness([event(1)]), state(1)
+    segment = current["segments"][0]
+    segment["source_end_seq"] = 1
+    segment["story_job"] = {"blocks": [[event(1)]]}
+    invalid = [
+        {
+            "title": "Invalid",
+            "paragraphs": [
+                {"text": "Claim", "event_refs": ["world:999"], "claim_kind": "event_based"}
+            ],
+        }
+    ]
+    with pytest.raises(RuleError) as error:
+        runner._chaptered_story(current, segment, invalid)
+    assert error.value.code == "STORY_REFERENCE_INVALID"
+    assert current["stories"] == {}
 
 
 async def test_finishing_pending_old_story_allows_resumed_additional_turns():

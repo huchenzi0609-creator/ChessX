@@ -9,12 +9,18 @@ from chessx.domain.errors import RuleError
 from chessx.llm import ModelError
 from chessx.runtime import schemas
 
+STORY_RETRY_RESERVE = 256
+
 
 class StoryMixin:
     def _story_input(self, state: dict, segment: dict, events: list[dict]) -> dict:
         return bard_context(state, segment["started_seq"], segment["source_end_seq"], events)
 
     def _fit_story(self, state: dict, context: dict) -> dict:
+        context = deepcopy(context)
+        # WorldRunner.ask adds this field. Plan with the exact same request DTO;
+        # even a five-token discrepancy can make a maximally packed block fail.
+        context["stage"] = "bard"
         return fit_context(
             "bard",
             context,
@@ -22,7 +28,7 @@ class StoryMixin:
             self.adapter(state).counter,
             # Reserve room for an unconstrained manuscript; actual output gets
             # the remaining model capacity rather than a fixed 2048-token cap.
-            max_output_tokens=self.settings.context_capacity // 3,
+            max_output_tokens=self.settings.context_capacity // 3 + STORY_RETRY_RESERVE,
             model_capacity=self.settings.context_capacity,
         )
 
@@ -107,6 +113,37 @@ class StoryMixin:
             }
         ]
 
+    def _chaptered_story(self, state: dict, segment: dict, summaries: list[dict]) -> list[dict]:
+        # These are complete, validated model-written narratives, not fallback
+        # fixture prose. Assembly changes neither their text nor source IDs and
+        # needs no model context containing every chapter at once.
+        chapters, paragraph_start = [], 0
+        for summary in summaries:
+            chapters.append(
+                {
+                    "title": summary["title"],
+                    "paragraph_start": paragraph_start,
+                    "paragraph_count": len(summary["paragraphs"]),
+                }
+            )
+            paragraph_start += len(summary["paragraphs"])
+        story = {
+            "title": summaries[0]["title"],
+            "paragraphs": [
+                deepcopy(paragraph) for summary in summaries for paragraph in summary["paragraphs"]
+            ],
+            "composition": "ordered_chapters",
+            "chapter_count": len(summaries),
+            "chapters": chapters,
+        }
+        allowed = {
+            event["id"]
+            for block in segment["story_job"]["blocks"]
+            for event in self._story_input(state, segment, block)["events"]
+        }
+        self._story_validator(allowed)(story)
+        return self._finish_story(state, segment, story)
+
     async def bard_step(self, state: dict) -> list[dict]:
         segment = state["segments"][-1]
         if "story_job" not in segment:
@@ -139,9 +176,22 @@ class StoryMixin:
         job = segment["story_job"]
         index = job["index"]
         if index < len(job["blocks"]):
-            context = self._fit_story(
-                state, self._story_input(state, segment, job["blocks"][index])
-            )
+            try:
+                context = self._fit_story(
+                    state, self._story_input(state, segment, job["blocks"][index])
+                )
+            except ModelError as error:
+                if error.code != "CONTEXT_BUDGET_EXCEEDED":
+                    raise
+                # Existing jobs may have been packed with an older prompt or
+                # reservation. Repartition only this pending block; completed
+                # chapters, original source range and indices stay durable.
+                blocks = self._story_blocks(state, segment, job["blocks"][index])
+                if len(blocks) < 2:
+                    raise
+                job["blocks"][index : index + 1] = blocks
+                job["chunked"] = True
+                return []
             allowed = {event["id"] for event in context["events"]}
             result = await self.ask(
                 state,
@@ -179,8 +229,14 @@ class StoryMixin:
             "summaries": deepcopy(job["summaries"]),
             "instruction": "Compose these ordered source-based summaries. Keep subjective claims attributed. Cite only the supplied ORIGINAL event IDs, never summary IDs. Do not invent or alter world facts.",
         }
-        # If summaries still exceed capacity, pause without dropping their facts.
-        context = self._fit_story(state, context)
+        try:
+            context = self._fit_story(state, context)
+        except ModelError as error:
+            if error.code != "CONTEXT_BUDGET_EXCEEDED":
+                raise
+            # Manuscripts can be longer than one model window. Do not discard,
+            # truncate or recursively compress completed chapters to fit it.
+            return self._chaptered_story(state, segment, job["summaries"])
         result = await self.ask(
             state,
             None,

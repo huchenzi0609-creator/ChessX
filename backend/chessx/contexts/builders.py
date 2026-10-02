@@ -183,6 +183,7 @@ def bard_context(state, start_seq: int, end_seq: int, events: list[dict]) -> dic
         "SegmentPaused",
         "RestartRecovered",
         "StoryRegenerationRequested",
+        "StoryResumeRequested",
         "ModelCapabilityVerified",
         "NegotiationPermissionUsed",
         "SettlementPermissionPassed",
