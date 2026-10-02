@@ -25,6 +25,14 @@ def validation_feedback(
         "SPEECH_INTERNAL_REFERENCE": "Rewrite the intended utterance in natural spoken language without source IDs, citation numbers, footnotes or technical labels. Do not reproduce the offending marker.",
         "SPEECH_REPETITIVE": "Do not repeat the previous long utterance or paraphrase it again. Respond briefly to a new point; if there is nothing new, choose pass or leave when permitted by this stage.",
     }
+    if stage == "memory":
+        # Reflection uses received evidence, not the optional compactor's batch.
+        source_repair = "For source_receipt_ids, copy exact values only from protocol.allowed_source_receipt_ids and reflection_sources[].receipt_id. evidence_* keys and world:event IDs are different namespaces, not receipt citations. Do not invent, infer, or cite another owner's or an omitted source. If no received evidence supports the reflection, use [] rather than fabricate a source. Preserve the same supplied knowledge and goal permissions."
+        repairs["MEMORY_SOURCE_INVALID"] = source_repair
+        if details.get("reason") == "SCHEMA_MISMATCH" and "enum" in details.get(
+            "schema_keywords", []
+        ):
+            instruction += " " + source_repair
     if details.get("reason") == "RESPONSE_TRUNCATED":
         instruction = "The previous generation reached the combined API output limit before completion. Regenerate with a short exposed reasoning trace (aim at most 250 tokens) and ONLY the minimal complete schema JSON. Do not enumerate history, rules or alternatives, append an essay, or copy/repair the incomplete response. Keep speech within 100 tokens and the entire formal JSON within its supplied budget. Preserve the same facts and stage permissions."
     return {

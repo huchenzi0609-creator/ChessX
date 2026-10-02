@@ -5,6 +5,7 @@ from copy import deepcopy
 from chessx.contexts.budgets import fit_context
 from chessx.contexts.extractive import extractive_compaction
 from chessx.contexts.memory import NOISE, compact_receipt, entry_context
+from chessx.contexts.reflection import reflection_request
 from chessx.domain.errors import RuleError
 from chessx.llm import ModelError
 from chessx.llm.feedback import validation_feedback
@@ -314,29 +315,17 @@ class CompactionMixin:
                 "instruction": "Reflect on your own subjective memory and textual goals from supplied evidence. The extractive index records what was received, not beliefs or verified reports. Preserve uncertainty and do not copy the whole archive. Missing information alone cannot make goals impossible. Cite only receipt IDs supplied in this context."
             },
         )
+        context, schema, allowed_ids = reflection_request(state, pid, context)
         context = fit_context(
             "memory",
             context,
-            schemas.MEMORY,
+            schema,
             self.adapter(state).counter,
             max_output_tokens=1024,
             model_capacity=self.settings.context_capacity,
             input_limit=self.settings.character_input_limit,
         )
-        ids = set()
-
-        def collect(value):
-            if isinstance(value, dict):
-                if isinstance(value.get("receipt_id"), str):
-                    ids.add(value["receipt_id"])
-                ids.update(value.get("source_receipt_ids", []))
-                for item in value.values():
-                    collect(item)
-            elif isinstance(value, list):
-                for item in value:
-                    collect(item)
-
-        collect(context)
+        ids = set(allowed_ids)
 
         def validate(result):
             if not set(result["source_receipt_ids"]).issubset(ids):
@@ -357,7 +346,7 @@ class CompactionMixin:
             pid,
             "memory",
             f"turn:{state['turn']}:reflection:{pid}",
-            schemas.MEMORY,
+            schema,
             {},
             context=context,
             validator=validate,

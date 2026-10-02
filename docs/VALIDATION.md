@@ -16,7 +16,7 @@
 
 | 范围 | 结果 | 证据 |
 |---|---|---|
-| 后端 | 429项离线测试通过 | tests/；pytest |
+| 后端 | 450项离线测试通过 | tests/；pytest |
 | 前端 | 34项组件／状态／契约测试通过 | frontend/src/**/*.test.tsx及api.test.ts |
 | 静态检查 | Ruff lint／格式、TypeScript、Prettier通过 | pyproject.toml／frontend package scripts |
 | 前端生产构建 | 通过 | Vite bundle，约87 KB gzip JS |
@@ -94,6 +94,12 @@
 - 本地实测摘要在Git忽略的 `data/dialogue-editorial-live-summary.json`；吟游样本正文只在本地私有文件，不进入对话或Git。
 
 ## 实施边界与后续
+
+反思来源修复（2026-10-03）：新档第20回合MEMORY actor_index=6及旧档第65回合均出现MEMORY_SOURCE_INVALID；现有反思中receipts窗口为空、检索来源与索引／事件ID混合，反馈还指向不存在的source_batch。反思改用固定完整reflection_sources、显式允许回执ID及动态schema枚举，裁剪和重试不改变来源集合；非本人、未呈现、歧义和非回执命名空间均拒绝。
+
+新增21项回归，450项后端测试及静态／密钥检查通过，覆盖固定来源重试、无来源空数组、重复／冲突ID、他人／未提供ID、源文本／存档不变及真实HTTP格式校验链路。新档实际失败阶段隔离副本用2次真实请求（探测1、反思1）成功，6引用全部位于6条白名单内，推理110／正式424 token；物理状态及原世界hash保持不变。本轮没有运行整局。原始记录在Git忽略的data/reflection-source-validation.sqlite3，安全汇总在同目录summary.json，权限600。
+
+新第20回合MEMORY actor_index=6及旧第65回合actor_index=3均已在唯一数据库写锁下重验并清除技术暂停，保持PAUSED等待用户继续；除seq／生命周期／错误标记外全部存档字段hash一致，模型操作数未增加。新旧原请求分别8170／8144 token，追加来源纠错后的已拟合DTO再拟合为8157／8092，全部6个完整来源及引用白名单保持不变。常驻后台8001与网页5180均HTTP 200；汇总在Git忽略的data/reflection-source-main-recovery-summary.json。
 
 导航上下文修复（2026-10-03）：第65回合PRIMARY、actor_index=4的下一行动在网络前被拦。原输入16252 token，旧裁剪保留每人至少一条派生接近路线及每种历史至少一条，最小仍8201／8192；并非鉴权、网络或服务商报错。压力下保留全体已知人物的坐标、时间、可见性和旧位置性质，移除可重建算术／日志ID，路线示例窗口允许完整省略至零，人物锚点与存档不裁减。
 

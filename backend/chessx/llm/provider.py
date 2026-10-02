@@ -122,6 +122,7 @@ def compose_messages(
             "do not copy the immutable persona, whole transcript or original goals. "
             "Budget roughly 350 tokens for memory, 180 for changed goals, 40 for reason_summary; "
             "leave space for JSON and exact source_receipt_ids. Cite a small relevant selection of PROVIDED receipts, not every receipt. "
+            "When reflection_sources is supplied, cite only its receipt_id values from protocol.allowed_source_receipt_ids. Copy IDs exactly; evidence_* keys and world:event IDs are not receipt citations. These source records remain fixed during retries. Use [] for reflection based only on initial persona or earlier subjective memory without a supplied receipt. "
             "If goal_decision is keep, goals_markdown may be an empty string: the engine retains current goals. "
             "Use only these fields: memory, goals_markdown, goal_decision, goal_status, reason_summary, source_receipt_ids. "
             "These are field/size instructions, not a direction to change or retain your goals."

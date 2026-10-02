@@ -134,7 +134,7 @@ class FixtureAdapter:
                 "reason_summary": "保留当前目标与个人记忆。",
                 "source_receipt_ids": [
                     r.get("receipt_id", r.get("id"))
-                    for r in context.get("receipts", [])
+                    for r in context.get("reflection_sources", context.get("receipts", []))
                     if r.get("receipt_id", r.get("id"))
                 ],
             }
