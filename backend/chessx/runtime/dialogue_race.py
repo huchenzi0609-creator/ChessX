@@ -12,10 +12,30 @@ from chessx.contexts import build_context
 from chessx.contexts.budgets import fit_context, request_input_tokens
 from chessx.llm import ModelError, ProviderAdapter
 from chessx.llm.feedback import validation_feedback
+from chessx.runtime.conversations import ordinary_permission_context, ordinary_slot
 from chessx.storage.store import ConflictError, canonical
 
 
 class DialogueRaceMixin:
+    def ordinary_candidate_context(self, state, cid, pid, schema, protocol):
+        """Estimate and execute exactly the same owner-private, policy-bound input."""
+        context = build_context(
+            state,
+            pid,
+            "ordinary",
+            {**protocol, **ordinary_permission_context(state, pid, state["conversations"][cid])},
+        )
+        context["execution_contract"] = self.execution_binding(state)
+        return fit_context(
+            "ordinary",
+            context,
+            schema,
+            self.adapter(state).counter,
+            max_output_tokens=512,
+            model_capacity=self.settings.context_capacity,
+            input_limit=self.settings.character_input_limit,
+        )
+
     async def ask_ordinary_race(self, state, cid, pids, schema, protocol, validator):
         from chessx.runtime.runner import BudgetError
 
@@ -23,16 +43,7 @@ class DialogueRaceMixin:
         adapter = self.adapter(state)
         # No request is sent for an oversized owner-private anchor.
         contexts = [
-            fit_context(
-                "ordinary",
-                build_context(state, pid, "ordinary", protocol),
-                schema,
-                adapter.counter,
-                max_output_tokens=512,
-                model_capacity=self.settings.context_capacity,
-                input_limit=self.settings.character_input_limit,
-            )
-            for pid in pids
+            self.ordinary_candidate_context(state, cid, pid, schema, protocol) for pid in pids
         ]
         if isinstance(adapter, ProviderAdapter) and not adapter._probed:
             await self.ensure_probe(state, adapter)
@@ -59,7 +70,7 @@ class DialogueRaceMixin:
                 state,
                 pid,
                 "ordinary",
-                f"turn:{state['turn']}:ordinary:{cid}:{pid}",
+                ordinary_slot(state, cid, pid),
                 schema,
                 protocol,
                 validator=partial(validator, pid),
@@ -106,7 +117,7 @@ class DialogueRaceMixin:
                 "pid": pid,
                 "context": context,
                 "state": snapshot,
-                "slot": f"turn:{state['turn']}:ordinary:{cid}:{pid}",
+                "slot": ordinary_slot(state, cid, pid),
             }
             candidates.append(candidate)
             tasks.append(asyncio.create_task(generate(candidate)))

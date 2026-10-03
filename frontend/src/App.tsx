@@ -5,6 +5,9 @@ import Inspector from './components/Inspector';
 import ScenarioEditor from './components/ScenarioEditor';
 import Stories from './components/Stories';
 import Timeline, { Empty } from './components/Timeline';
+import ArchiveTools from './components/ArchiveTools';
+import RuntimePanel, { BudgetEditor, DEFAULT_BUDGET } from './components/RuntimePanel';
+import { label } from './lib/language';
 import { useWorld } from './hooks/useWorld';
 import { api } from './lib/api';
 import {
@@ -28,6 +31,7 @@ export default function App() {
   const [view, setView] = useState<View>('observer');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [turns, setTurns] = useState(5);
+  const [budget, setBudget] = useState(DEFAULT_BUDGET);
   const [tab, setTab] = useState<Tab>('events');
   const [commandBusy, setCommandBusy] = useState(false);
   const [commandMessage, setCommandMessage] = useState<string | null>(null);
@@ -47,6 +51,8 @@ export default function App() {
     error,
     connected,
     refresh,
+    loadEvent,
+    loadEarlier,
   } = useWorld(worldId, perspectiveId, replaySeq);
   const world = fetchedWorld?.world_id === worldId && !perspectiveId ? fetchedWorld : null;
   const perspective =
@@ -150,6 +156,7 @@ export default function App() {
         worldId,
         kind,
         kind === 'run' || kind === 'resume' ? turns : undefined,
+        ['run', 'resume', 'step_event', 'step_turn', 'retry'].includes(kind) ? budget : undefined,
       );
       if (kind === 'reset' && typeof result.world_id === 'string' && result.world_id !== worldId) {
         chooseWorld(result.world_id);
@@ -193,13 +200,19 @@ export default function App() {
   function reference(eventId: string) {
     setTab('events');
     setHighlightedEvent(eventId);
-    setTimeout(
-      () =>
-        document
-          .getElementById(`event-${eventId}`)
-          ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
-      50,
-    );
+    void loadEvent(eventId)
+      .then(() =>
+        setTimeout(
+          () =>
+            document
+              .getElementById(`event-${eventId}`)
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' }),
+          50,
+        ),
+      )
+      .catch((cause) =>
+        setLocalError(cause instanceof Error ? cause.message : '引用事件暂时无法读取'),
+      );
   }
   const busy = commandBusy || replaySeq !== null;
   const runState = metadata?.lifecycle ?? 'READY';
@@ -242,7 +255,7 @@ export default function App() {
         {!worldId || editorOpen ? (
           <>
             <div className="intro">
-              <span className="eyebrow">CHESSX / DEMO V2.1</span>
+              <span className="eyebrow">CHESSX / DEMO V2.2</span>
               <h1>
                 规则安排相遇。
                 <br />
@@ -269,7 +282,14 @@ export default function App() {
                   <span className={`mode-badge ${metadata?.mode === 'live' ? 'live' : ''}`}>
                     {metadata?.mode === 'live' ? '真实模型实验' : '工程固定响应 · 非 AI'}
                   </span>
-                  <span className="muted mono">{health?.rule_version ?? 'demo-v2.1'}</span>
+                  <span className="muted mono">
+                    {asText(
+                      metadata?.rule_profile ??
+                        (health?.rule_version
+                          ? `demo-v${health.rule_version.replace(/^demo-v/, '')}`
+                          : 'demo-v2.2'),
+                    )}
+                  </span>
                   <span className="muted mono">{worldId.slice(0, 12)}</span>
                 </div>
               </div>
@@ -290,6 +310,40 @@ export default function App() {
                 </select>
               </div>
             </section>
+            <details className="budget-settings">
+              <summary>
+                本次预算：{budget.max_calls} 次请求 ·{' '}
+                {budget.max_total_tokens.toLocaleString('zh-CN')} Token · {budget.max_wall_seconds}{' '}
+                秒（可调整）
+              </summary>
+              <BudgetEditor
+                budget={budget}
+                onChange={setBudget}
+                disabled={busy || ['RUNNING', 'STEPPING', 'PAUSING'].includes(runState)}
+              />
+            </details>
+            {!perspectiveId && world && <RuntimePanel world={world} names={visibleNames} />}
+            <ArchiveTools
+              worldId={worldId}
+              title={String(metadata?.title ?? worldId)}
+              running={commandBusy || ['RUNNING', 'STEPPING', 'PAUSING'].includes(runState)}
+              readonly={Boolean(perspectiveId) || replaySeq !== null}
+              onChanged={() => {
+                refresh();
+                void syncWorlds();
+              }}
+              onDeleted={() => {
+                const remaining = worlds.filter((item) => item.world_id !== worldId);
+                setWorlds(remaining);
+                if (remaining.length) chooseWorld(remaining[0].world_id);
+                else {
+                  setWorldId(null);
+                  setView('observer');
+                  setReplaySeq(null);
+                  setSelectedId(null);
+                }
+              }}
+            />
             <section className="controls" aria-label="实验运行控制">
               <div className="run-group">
                 <label htmlFor="turn-count">运行</label>
@@ -364,7 +418,9 @@ export default function App() {
               </div>
               <div>
                 <span>运行阶段</span>
-                <strong>{world?.phase ?? (perspectiveId ? '角色观测' : '—')}</strong>
+                <strong>
+                  {world?.phase ? label(world.phase) : perspectiveId ? '角色观测' : '—'}
+                </strong>
               </div>
               <div>
                 <span>执行状态</span>
@@ -373,7 +429,7 @@ export default function App() {
                     ? world
                       ? `REPLAY · #${world.seq}`
                       : 'REPLAY · 正在载入'
-                    : runState}
+                    : label(runState)}
                 </strong>
               </div>
               <div>
@@ -518,14 +574,19 @@ export default function App() {
                       receipts={perspectiveId ? (perspective?.receipts ?? []) : undefined}
                       highlightedEvent={highlightedEvent}
                       onEvent={setHighlightedEvent}
+                      onLoadEarlier={loadEarlier}
+                      hasEarlierReceipts={perspective?.receipt_page?.has_earlier}
                     />
                   )}
                   {!perspectiveId && tab === 'conversations' && (
                     <Conversations
+                      key={`${worldId}:${replaySeq ?? 'live'}`}
                       conversations={dialogs}
                       currentTurn={world?.turn ?? 0}
                       names={visibleNames}
                       events={visibleEvents}
+                      worldId={worldId}
+                      readonly={replaySeq !== null}
                     />
                   )}
                   {!perspectiveId &&

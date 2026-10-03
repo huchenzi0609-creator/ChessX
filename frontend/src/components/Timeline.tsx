@@ -1,4 +1,5 @@
 import { asText, type EventRecord, type Position, type RecordData } from '../lib/types';
+import { useEffect, useState } from 'react';
 const eventNames: Record<string, string> = {
   WorldCreated: '世界创建',
   TurnStarted: '回合开始',
@@ -112,6 +113,8 @@ export default function Timeline({
   onEvent,
   names = {},
   pieceTypes = {},
+  onLoadEarlier,
+  hasEarlierReceipts = false,
 }: {
   events?: EventRecord[];
   receipts?: RecordData[];
@@ -119,43 +122,58 @@ export default function Timeline({
   onEvent: (id: string) => void;
   names?: Record<string, string>;
   pieceTypes?: Record<string, string>;
+  onLoadEarlier?: () => Promise<void>;
+  hasEarlierReceipts?: boolean;
 }) {
   const entries = events ?? [];
+  const [limit, setLimit] = useState(60);
+  const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  useEffect(() => {
+    setLimit(60);
+  }, [Boolean(receipts)]);
+  const reversed = [...entries].reverse();
+  const page = reversed.slice(0, limit);
+  const selected = entries.find((event) => event.event_id === highlightedEvent);
+  if (selected && !page.some((event) => event.event_id === selected.event_id)) page.push(selected);
   return (
     <div className="timeline" aria-live="polite">
       {receipts ? (
         receipts.length ? (
-          [...receipts].reverse().map((receipt, index) => {
-            const type = String(receipt.type ?? receipt.kind ?? '');
-            const payload = recordOf(receipt.payload ?? receipt);
-            return (
-              <article
-                className="receipt"
-                key={String(receipt.receipt_id ?? receipt.event_id ?? index)}
-              >
-                <span className="eyebrow">
-                  {eventNames[type] ?? (type || `收件 ${receipts.length - index}`)}
-                  {receipt.turn !== undefined ? ` · T${receipt.turn}` : ''}
-                </span>
-                <EventFacts
-                  type={type}
-                  payload={payload}
-                  actorId={typeof receipt.actor_id === 'string' ? receipt.actor_id : undefined}
-                  names={names}
-                  pieceTypes={pieceTypes}
-                />
-                <details>
-                  <summary>收件事实</summary>
-                  <pre>{asText(receipt)}</pre>
-                </details>
-              </article>
-            );
-          })
+          [...receipts]
+            .reverse()
+            .slice(0, limit)
+            .map((receipt, index) => {
+              const type = String(receipt.type ?? receipt.kind ?? '');
+              const payload = recordOf(receipt.payload ?? receipt);
+              return (
+                <article
+                  className="receipt"
+                  key={String(receipt.receipt_id ?? receipt.event_id ?? index)}
+                >
+                  <span className="eyebrow">
+                    {eventNames[type] ?? (type || `收件 ${receipts.length - index}`)}
+                    {receipt.turn !== undefined ? ` · T${receipt.turn}` : ''}
+                  </span>
+                  <EventFacts
+                    type={type}
+                    payload={payload}
+                    actorId={typeof receipt.actor_id === 'string' ? receipt.actor_id : undefined}
+                    names={names}
+                    pieceTypes={pieceTypes}
+                  />
+                  <details>
+                    <summary>收件事实</summary>
+                    <pre>{asText(receipt)}</pre>
+                  </details>
+                </article>
+              );
+            })
         ) : (
           <Empty>本人尚未收到消息。</Empty>
         )
       ) : entries.length ? (
-        [...entries].reverse().map((event) => (
+        page.map((event) => (
           <article
             id={`event-${event.event_id}`}
             key={event.event_id}
@@ -183,6 +201,39 @@ export default function Timeline({
         ))
       ) : (
         <Empty>世界已准备好。运行一个回合，观察第一个事实如何发生。</Empty>
+      )}
+      {(receipts ? receipts.length > limit : entries.length > limit) && (
+        <button onClick={() => setLimit((current) => current + 60)}>显示更早的 60 条</button>
+      )}
+      {(receipts
+        ? hasEarlierReceipts && receipts.length <= limit
+        : entries.length <= limit &&
+          entries.length > 0 &&
+          Math.min(...entries.map((event) => event.seq)) > 1) &&
+        onLoadEarlier && (
+          <button
+            disabled={loading}
+            onClick={async () => {
+              setLoading(true);
+              setLoadError(null);
+              try {
+                await onLoadEarlier();
+                setLimit((current) => current + 200);
+              } catch {
+                setLoadError('更早的事件暂时无法读取，请重试。');
+              } finally {
+                setLoading(false);
+              }
+            }}
+          >
+            {loading ? '读取历史…' : receipts ? '读取更早的本人收件' : '读取更早的存档页'}
+          </button>
+        )}
+      {loadError && <p role="alert">{loadError}</p>}
+      {(entries.length > 60 || (receipts?.length ?? 0) > 60) && (
+        <p className="muted small">
+          记录按窗口显示；故事来源可直接跳转到对应事件。更早内容保存在本地存档中。
+        </p>
       )}
     </div>
   );

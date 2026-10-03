@@ -6,6 +6,8 @@ through shared references. Language is delivered only to explicit audiences.
 
 from copy import deepcopy
 
+from chessx.domain.profile import is_legacy_rules
+
 PIECE_FIELDS = (
     "id",
     "name",
@@ -143,8 +145,8 @@ def _piece(piece: dict) -> dict:
     return {key: deepcopy(piece[key]) for key in PIECE_FIELDS if key in piece}
 
 
-def _in_view(piece: dict, position: dict) -> bool:
-    radius = 2 if piece.get("type") == "knight" else 1
+def _in_view(piece: dict, position: dict, state: dict | None = None) -> bool:
+    radius = 2 if piece.get("type") == "knight" and is_legacy_rules(state or {}) else 1
     own = piece["position"]
     return (
         abs(own["row"] - position["row"]) <= radius and abs(own["col"] - position["col"]) <= radius
@@ -179,7 +181,7 @@ def observe(state, pid: str) -> dict:
     ]
     if not own.get("alive", True):
         return result
-    radius = 2 if own.get("type") == "knight" else 1
+    radius = 2 if own.get("type") == "knight" and is_legacy_rules(state) else 1
     position = own["position"]
     result["visible_cells"] = [
         {"row": row, "col": col}
@@ -193,18 +195,20 @@ def observe(state, pid: str) -> dict:
         )
     ]
     result["pieces"] = [
-        _piece(p) for p in _items(pieces) if p.get("alive", True) and _in_view(own, p["position"])
+        _piece(p)
+        for p in _items(pieces)
+        if p.get("alive", True) and _in_view(own, p["position"], state)
     ]
     result["objects"] = [
         deepcopy(obj)
         for obj in _items(state.get("objects", {}))
         if obj.get("location", {}).get("kind") == "ground"
-        and _in_view(own, obj["location"]["position"])
+        and _in_view(own, obj["location"]["position"], state)
     ]
     result["tombstones"] = [
         {key: deepcopy(tomb[key]) for key in ("id", "piece_id", "position") if key in tomb}
         for tomb in _items(state.get("tombstones", {}))
-        if _in_view(own, tomb["position"])
+        if _in_view(own, tomb["position"], state)
     ]
     return result
 
@@ -271,7 +275,7 @@ def project_event(state, event: dict, pid: str) -> dict | None:
         return header
     if kind in {"Death", "PieceDied", "DeathExecuted", "DeathCommitted"}:
         position = payload.get("position")
-        if not admitted and not (isinstance(position, dict) and _in_view(own, position)):
+        if not admitted and not (isinstance(position, dict) and _in_view(own, position, state)):
             return None
         # A witness sees the execution; tombstone observation never receives killer.
         header["payload"] = {
@@ -307,11 +311,13 @@ def project_event(state, event: dict, pid: str) -> dict | None:
                 if key in payload
             }
             return header
-        visible = [deepcopy(pos) for pos in path if isinstance(pos, dict) and _in_view(own, pos)]
+        visible = [
+            deepcopy(pos) for pos in path if isinstance(pos, dict) and _in_view(own, pos, state)
+        ]
         origin = payload.get("origin", payload.get("from"))
         destination = payload.get("position", payload.get("actual_to", payload.get("to")))
-        seen_origin = isinstance(origin, dict) and _in_view(own, origin)
-        seen_destination = isinstance(destination, dict) and _in_view(own, destination)
+        seen_origin = isinstance(origin, dict) and _in_view(own, origin, state)
+        seen_destination = isinstance(destination, dict) and _in_view(own, destination, state)
         if not visible and not seen_origin and not seen_destination:
             return None
         projected = {
@@ -333,7 +339,7 @@ def project_event(state, event: dict, pid: str) -> dict | None:
         header["payload"] = projected
         return header
     position = payload.get("position", payload.get("actual_to", payload.get("to")))
-    if not admitted and not (isinstance(position, dict) and _in_view(own, position)):
+    if not admitted and not (isinstance(position, dict) and _in_view(own, position, state)):
         return None
     if (
         kind in {"ObjectPicked", "ObjectPickedUp", "ObjectDropped", "ObjectTransferred"}

@@ -10,10 +10,16 @@ import hashlib
 import json
 import os
 import sqlite3
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+from uuid import uuid4
+
+from chessx.runtime.versioning import SAVE_SCHEMA_VERSION
+from chessx.storage.journal import apply_delta, state_delta
 
 SPATIAL_MEMORY_SCHEMA_VERSION = 1
+CHECKPOINT_INTERVAL = 50
 
 
 def canonical(value: Any) -> str:
@@ -50,7 +56,7 @@ class Store:
         self.db.execute("PRAGMA busy_timeout=5000")
         self.db.executescript("""
         CREATE TABLE IF NOT EXISTS schema_version(version INTEGER PRIMARY KEY);
-        INSERT OR IGNORE INTO schema_version VALUES(1);
+        INSERT INTO schema_version SELECT 1 WHERE NOT EXISTS(SELECT 1 FROM schema_version);
         CREATE TABLE IF NOT EXISTS worlds(id TEXT PRIMARY KEY, seq INTEGER NOT NULL, generation INTEGER NOT NULL, state TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS initial_states(world_id TEXT PRIMARY KEY REFERENCES worlds(id), state TEXT NOT NULL, checksum TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS events(world_id TEXT NOT NULL REFERENCES worlds(id), seq INTEGER NOT NULL, event TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(world_id,seq));
@@ -58,6 +64,39 @@ class Store:
         CREATE TABLE IF NOT EXISTS commands(world_id TEXT NOT NULL, id TEXT NOT NULL, body TEXT NOT NULL, status TEXT NOT NULL, error_code TEXT, PRIMARY KEY(world_id,id));
         CREATE TABLE IF NOT EXISTS text_versions(world_id TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, version INTEGER NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(world_id,owner,kind,version));
         """)
+        self._migrate_journal()
+
+    def _migrate_journal(self) -> None:
+        """Idempotent storage-only migration; frozen worlds retain their policy."""
+        version = self.db.execute("SELECT MAX(version) FROM schema_version").fetchone()[0]
+        if version is not None and version > SAVE_SCHEMA_VERSION:
+            self.db.close()
+            fcntl.flock(self._lock_file.fileno(), fcntl.LOCK_UN)
+            self._lock_file.close()
+            raise RuntimeError("CHESSX_SAVE_SCHEMA_UNSUPPORTED")
+        columns = {row["name"] for row in self.db.execute("PRAGMA table_info(events)")}
+        operation_columns = {
+            row["name"] for row in self.db.execute("PRAGMA table_info(operations)")
+        }
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            if "storage_kind" not in columns:
+                self.db.execute(
+                    "ALTER TABLE events ADD COLUMN storage_kind TEXT NOT NULL DEFAULT 'checkpoint'"
+                )
+            if "base_seq" not in columns:
+                self.db.execute("ALTER TABLE events ADD COLUMN base_seq INTEGER")
+            if "usage" not in operation_columns:
+                self.db.execute("ALTER TABLE operations ADD COLUMN usage TEXT")
+            self.db.execute("DELETE FROM schema_version")
+            self.db.execute("INSERT INTO schema_version VALUES(?)", (SAVE_SCHEMA_VERSION,))
+            self.db.execute(
+                "CREATE INDEX IF NOT EXISTS operations_world_status ON operations(world_id,status)"
+            )
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
 
     def close(self) -> None:
         self.db.close()
@@ -91,6 +130,88 @@ class Store:
             json.loads(row[0])
             for row in self.db.execute("SELECT state FROM worlds ORDER BY rowid DESC")
         ]
+
+    def world_summaries(self) -> list[dict]:
+        rows = self.db.execute("""SELECT id AS world_id,
+            json_extract(state,'$.lifecycle') AS lifecycle,
+            json_extract(state,'$.turn') AS turn,
+            json_extract(state,'$.completed_turn') AS completed_turn,
+            json_extract(state,'$.title') AS title,
+            json_extract(state,'$.mode') AS mode,
+            json_extract(state,'$.execution_policy.id') AS execution_policy,
+            json_extract(state,'$.save_schema_version') AS save_schema_version
+            FROM worlds ORDER BY rowid DESC""")
+        return [dict(row) for row in rows]
+
+    def pending_count(self, world_id: str) -> int:
+        return self.db.execute(
+            "SELECT COUNT(*) FROM operations WHERE world_id=? AND status='pending'", (world_id,)
+        ).fetchone()[0]
+
+    def pending_metadata(self, world_id: str) -> list[dict]:
+        return [
+            dict(row)
+            for row in self.db.execute(
+                """SELECT slot AS slot_id,attempt,status,
+            json_extract(context,'$.stage') AS stage,
+            json_extract(context,'$.actor_id') AS actor_id
+            FROM operations WHERE world_id=? AND status='pending' ORDER BY rowid""",
+                (world_id,),
+            )
+        ]
+
+    def delete_world(self, world_id: str) -> None:
+        """All world-owned rows disappear together; preset files are independent."""
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            row = self.db.execute(
+                "SELECT json_extract(state,'$.lifecycle') FROM worlds WHERE id=?", (world_id,)
+            ).fetchone()
+            if row is None:
+                raise KeyError(world_id)
+            if row[0] in {"RUNNING", "STEPPING", "PAUSING"} or self.pending_count(world_id):
+                raise ConflictError("WORLD_BUSY")
+            for table in ("events", "operations", "commands", "text_versions", "initial_states"):
+                self.db.execute(f"DELETE FROM {table} WHERE world_id=?", (world_id,))
+            self.db.execute("DELETE FROM worlds WHERE id=?", (world_id,))
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+
+    def backup(self, directory: Path) -> dict:
+        """SQLite's online backup includes WAL commits without copying live files."""
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        backup_id = "backup_" + uuid4().hex
+        path = directory / (backup_id + ".sqlite3")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        os.close(fd)
+        source, destination = None, None
+        succeeded = False
+        try:
+            destination = sqlite3.connect(path)
+            source = sqlite3.connect(self.path.resolve().as_uri() + "?mode=ro", uri=True)
+            # This dedicated read connection may run on an I/O worker. The
+            # single writer connection never leaves its owning event loop.
+            source.execute("BEGIN")
+            source.execute("SELECT id FROM worlds LIMIT 1").fetchone()
+            source.backup(destination, pages=256)
+            succeeded = True
+        finally:
+            if source is not None:
+                source.close()
+            if destination is not None:
+                destination.close()
+            if not succeeded:
+                path.unlink(missing_ok=True)
+        return {
+            "backup_id": backup_id,
+            "filename": path.name,
+            "created_at": datetime.now(UTC).isoformat(),
+            "size_bytes": path.stat().st_size,
+            "scope": "database",
+            "schema_version": SAVE_SCHEMA_VERSION,
+        }
 
     @staticmethod
     def _record_spatial_sightings(
@@ -183,6 +304,8 @@ class Store:
                 "turn": row["turn"],
                 "tombstones": json.loads(row["tombstones"] or "{}"),
                 "objects": {},
+                "rule_profile": row["rule_profile"],
+                "rule_manifest": json.loads(row["rule_manifest"] or "{}"),
             }
 
         world_id = state["world_id"]
@@ -190,26 +313,36 @@ class Store:
             """SELECT json_extract(state,'$.pieces') AS pieces,
                       json_extract(state,'$.board') AS board,
                       json_extract(state,'$.turn') AS turn,
+                      json_extract(state,'$.rule_profile') AS rule_profile,
+                      json_extract(state,'$.rule_manifest') AS rule_manifest,
                       json_extract(state,'$.tombstones') AS tombstones
                FROM initial_states WHERE world_id=?""",
             (world_id,),
         ).fetchone()
         if initial is not None:
             self._record_spatial_sightings(recovered, snapshot_from(initial), None, owners=owners)
-        rows = self.db.execute(
-            """SELECT seq, json_extract(state,'$.pieces') AS pieces,
-                      json_extract(state,'$.board') AS board,
-                      json_extract(state,'$.turn') AS turn,
-                      json_extract(state,'$.tombstones') AS tombstones,
-                      json_extract(event,'$.event_id') AS source_event_id
-               FROM events WHERE world_id=? AND seq<=? ORDER BY seq""",
-            (world_id, state["seq"]),
-        )
-        for row in rows:
+        for historical in self.iter_states(
+            world_id, through_seq=state["seq"], include_initial=False
+        ):
+            # Existing journals may mix full legacy snapshots and delta rows.
+            # Observations use each historical checkpoint's frozen rule profile.
+            snapshot = {
+                key: historical[key]
+                for key in (
+                    "pieces",
+                    "board",
+                    "turn",
+                    "tombstones",
+                    "rule_profile",
+                    "rule_manifest",
+                )
+                if key in historical
+            }
+            snapshot["objects"] = {}
             self._record_spatial_sightings(
                 recovered,
-                snapshot_from(row),
-                row["source_event_id"] or f"{world_id}:{row['seq']}",
+                snapshot,
+                f"{world_id}:{historical['seq']}",
                 owners=owners,
             )
         for owner in owners:
@@ -282,6 +415,7 @@ class Store:
         assert_invariants(state)
         prior_hash = digest(old)
         records = []
+        previous = old
         for draft in drafts:
             state["seq"] += 1
             seq = state["seq"]
@@ -321,7 +455,18 @@ class Store:
             self._record_spatial_sightings(state, state, event["event_id"])
             event["resulting_state_hash"] = digest(state)
             prior_hash = event["resulting_state_hash"]
-            records.append((seq, canonical(event), canonical(state)))
+            checkpoint = seq == 1 or seq % CHECKPOINT_INTERVAL == 0
+            stored = state if checkpoint else state_delta(previous, state)
+            records.append(
+                (
+                    seq,
+                    canonical(event),
+                    canonical(stored),
+                    "checkpoint" if checkpoint else "delta",
+                    None if checkpoint else previous["seq"],
+                )
+            )
+            previous = copy.deepcopy(state)
         self.db.execute("BEGIN IMMEDIATE")
         try:
             row = self.db.execute(
@@ -334,7 +479,8 @@ class Store:
                 (state["seq"], state["generation"], canonical(state), state["world_id"]),
             )
             self.db.executemany(
-                "INSERT INTO events VALUES(?,?,?,?)", [(state["world_id"], *r) for r in records]
+                "INSERT INTO events(world_id,seq,event,state,storage_kind,base_seq) VALUES(?,?,?,?,?,?)",
+                [(state["world_id"], *r) for r in records],
             )
             if operation:
                 slot, attempt, result = operation
@@ -395,15 +541,112 @@ class Store:
                 return state
             raise KeyError(seq)
         row = self.db.execute(
-            "SELECT state,event FROM events WHERE world_id=? AND seq<=? ORDER BY seq DESC LIMIT 1",
+            "SELECT seq,state,event,storage_kind,base_seq FROM events WHERE world_id=? AND seq<=? AND storage_kind='checkpoint' ORDER BY seq DESC LIMIT 1",
             (world_id, seq),
         ).fetchone()
         if row is None:
+            state = self.replay(world_id, 0)
+        else:
+            state = self._restore_row(None, row)
+        for change in self.db.execute(
+            "SELECT seq,state,event,storage_kind,base_seq FROM events WHERE world_id=? AND seq>? AND seq<=? ORDER BY seq",
+            (world_id, state["seq"], seq),
+        ):
+            state = self._restore_row(state, change)
+        if state["seq"] == 0:
             raise KeyError(seq)
-        state = json.loads(row["state"])
-        if digest(state) != json.loads(row["event"])["resulting_state_hash"]:
+        return state
+
+    @staticmethod
+    def _restore_row(previous: dict | None, row) -> dict:
+        event = json.loads(row["event"])
+        if row["storage_kind"] == "checkpoint":
+            state = json.loads(row["state"])
+        elif row["storage_kind"] == "delta":
+            if (
+                previous is None
+                or row["base_seq"] != previous["seq"]
+                or row["seq"] != previous["seq"] + 1
+                or digest(previous) != event["previous_state_hash"]
+            ):
+                raise ValueError("CHECKPOINT_CORRUPTED")
+            try:
+                state = apply_delta(previous, json.loads(row["state"]))
+            except (KeyError, IndexError, TypeError):
+                raise ValueError("CHECKPOINT_CORRUPTED") from None
+        else:
+            raise ValueError("CHECKPOINT_FORMAT_UNSUPPORTED")
+        if digest(state) != event["resulting_state_hash"]:
             raise ValueError("CHECKPOINT_CORRUPTED")
         return state
+
+    def iter_states(
+        self, world_id: str, *, through_seq: int | None = None, include_initial: bool = True
+    ):
+        """Stream one reconstructed exact event snapshot at a time."""
+        state = self.replay(world_id, 0)
+        if include_initial:
+            yield state
+        ceiling = (
+            through_seq
+            if through_seq is not None
+            else self.db.execute("SELECT seq FROM worlds WHERE id=?", (world_id,)).fetchone()[0]
+        )
+        for row in self.db.execute(
+            "SELECT seq,state,event,storage_kind,base_seq FROM events WHERE world_id=? AND seq<=? ORDER BY seq",
+            (world_id, ceiling),
+        ):
+            state = self._restore_row(state, row)
+            yield state
+
+    def compact_journal(self, world_id: str) -> dict:
+        """Explicit lossless rewrite after an external backup; never VACUUM live DB."""
+        before = self.db.execute(
+            "SELECT COALESCE(SUM(length(state)),0) FROM events WHERE world_id=?", (world_id,)
+        ).fetchone()[0]
+        # A temporary SQL table avoids buffering a long archive in Python memory.
+        self.db.execute("BEGIN IMMEDIATE")
+        try:
+            self.db.execute(
+                "CREATE TEMP TABLE compacted(seq INTEGER PRIMARY KEY,state TEXT,storage_kind TEXT,base_seq INTEGER)"
+            )
+            previous = self.replay(world_id, 0)
+            for state in self.iter_states(world_id, include_initial=False):
+                checkpoint = state["seq"] == 1 or state["seq"] % CHECKPOINT_INTERVAL == 0
+                stored = state if checkpoint else state_delta(previous, state)
+                self.db.execute(
+                    "INSERT INTO compacted VALUES(?,?,?,?)",
+                    (
+                        state["seq"],
+                        canonical(stored),
+                        "checkpoint" if checkpoint else "delta",
+                        None if checkpoint else previous["seq"],
+                    ),
+                )
+                previous = state
+            self.db.execute(
+                """UPDATE events SET
+                state=(SELECT state FROM compacted WHERE seq=events.seq),
+                storage_kind=(SELECT storage_kind FROM compacted WHERE seq=events.seq),
+                base_seq=(SELECT base_seq FROM compacted WHERE seq=events.seq)
+                WHERE world_id=?""",
+                (world_id,),
+            )
+            self.db.execute("DROP TABLE compacted")
+            self.db.execute("COMMIT")
+        except BaseException:
+            self.db.execute("ROLLBACK")
+            raise
+        after = self.db.execute(
+            "SELECT COALESCE(SUM(length(state)),0) FROM events WHERE world_id=?", (world_id,)
+        ).fetchone()[0]
+        return {
+            "world_id": world_id,
+            "compacted": True,
+            "journal_bytes_before": before,
+            "journal_bytes_after": after,
+            "database_space_reclaimed": False,
+        }
 
     def prepare(self, world_id: str, slot: str, generation: int, context: dict) -> int:
         attempt = self.db.execute(
@@ -411,10 +654,29 @@ class Store:
             (world_id, slot),
         ).fetchone()[0]
         self.db.execute(
-            "INSERT INTO operations VALUES(?,?,?,?,?,?,'pending',NULL,NULL)",
+            "INSERT INTO operations(world_id,slot,attempt,generation,context_hash,context,status,result,error_code) VALUES(?,?,?,?,?,?,'pending',NULL,NULL)",
             (world_id, slot, attempt, generation, digest(context), canonical(context)),
         )
         return attempt
+
+    def record_operation_usage(self, world_id: str, slot: str, attempt: int, usage: dict) -> None:
+        """Record returned counters even if a later schema/COT check rejects output."""
+        counters = {
+            key: max(0, int(usage[key]))
+            for key in ("input_tokens", "output_tokens", "reasoning_tokens")
+            if key in usage
+        }
+        self.db.execute(
+            "UPDATE operations SET usage=? WHERE world_id=? AND slot=? AND attempt=?",
+            (canonical(counters), world_id, slot, attempt),
+        )
+
+    def unknown_usage_count(self, world_id: str) -> int:
+        return self.db.execute(
+            """SELECT COUNT(*) FROM operations WHERE world_id=?
+            AND usage IS NULL AND (result IS NULL OR json_type(result,'$.input_tokens') IS NULL)""",
+            (world_id,),
+        ).fetchone()[0]
 
     def fail_operation(
         self,
@@ -439,25 +701,56 @@ class Store:
         )
 
     def operation_records(self, world_id: str, owner: str) -> list[dict]:
+        return self.operation_page(world_id, actor_id=owner, limit=100)["operations"]
+
+    def operation_page(
+        self,
+        world_id: str,
+        *,
+        actor_id: str | None = None,
+        stage: str | None = None,
+        before_id: int | None = None,
+        limit: int = 50,
+    ) -> dict:
+        clauses, parameters = ["world_id=?"], [world_id]
+        if actor_id is not None:
+            clauses.append("json_extract(context,'$.actor_id')=?")
+            parameters.append(actor_id)
+        if stage is not None:
+            clauses.append("json_extract(context,'$.stage')=?")
+            parameters.append(stage)
+        if before_id is not None:
+            clauses.append("rowid<?")
+            parameters.append(before_id)
+        parameters.append(limit + 1)
         rows = self.db.execute(
-            "SELECT slot,attempt,status,context,result,error_code FROM operations WHERE world_id=? ORDER BY rowid DESC LIMIT 100",
-            (world_id,),
+            "SELECT rowid AS record_id,slot,attempt,status,context,result,error_code FROM operations WHERE "
+            + " AND ".join(clauses)
+            + " ORDER BY rowid DESC LIMIT ?",
+            parameters,
         ).fetchall()
         result = []
-        for row in rows:
+        for row in rows[:limit]:
             context = json.loads(row["context"])
-            if context.get("actor_id") == owner:
-                result.append(
-                    {
-                        "slot_id": row["slot"],
-                        "attempt": row["attempt"],
-                        "status": row["status"],
-                        "context": context,
-                        "result": json.loads(row["result"]) if row["result"] else None,
-                        "error_code": row["error_code"],
-                    }
-                )
-        return result
+            result.append(
+                {
+                    "record_id": row["record_id"],
+                    "slot_id": row["slot"],
+                    "attempt": row["attempt"],
+                    "status": row["status"],
+                    "actor_id": context.get("actor_id"),
+                    "stage": context.get("stage"),
+                    "context": context,
+                    "result": json.loads(row["result"]) if row["result"] else None,
+                    "error_code": row["error_code"],
+                }
+            )
+        return {
+            "operations": result,
+            "next_cursor": result[-1]["record_id"] if result else None,
+            "has_more": len(rows) > limit,
+            "research_only": True,
+        }
 
     def command(self, world_id: str, command_id: str, body: dict) -> dict:
         row = self.db.execute(

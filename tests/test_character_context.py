@@ -89,7 +89,7 @@ def test_openly_expressible_goal_is_private_until_speech():
     assert "A_PUBLIC_GOAL_PRIVATE" in build_context(state, "a", "action")["goals"]
 
 
-def test_narrator_has_labeled_initial_and_dynamic_memories_but_bard_has_neither():
+def test_narrator_has_only_labeled_subjective_memory_but_bard_has_neither():
     state = world()
     state["private"]["a"]["memory"] = "A_NEW_MEMORY"
     state["private"]["b"]["memory"] = "B_NEW_MEMORY"
@@ -97,11 +97,13 @@ def test_narrator_has_labeled_initial_and_dynamic_memories_but_bard_has_neither(
     assert context["participant_memories"] == [
         {
             "owner_id": "a",
-            "memory": state["private"]["a"]["initial_memory"] + "\n\nA_NEW_MEMORY",
+            "memory": "A_NEW_MEMORY",
         }
     ]
     assert "B_PRIVATE_LIFE" not in json.dumps(context)
     assert "B_NEW_MEMORY" not in json.dumps(context)
+    assert "A_PRIVATE_LIFE" not in json.dumps(context)
+    assert "A_PUBLIC_GOAL_PRIVATE" not in json.dumps(context)
     assert "Do not publish private recollections" in context["instruction"]
     assert "A_PRIVATE_LIFE" not in json.dumps(bard_context(state, 0, 5, []))
 

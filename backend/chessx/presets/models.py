@@ -44,7 +44,7 @@ class PresetScenario(StrictModel):
     scenario_id: SafeIdentifier
     title: str = Field(min_length=1, max_length=200)
     board: Board
-    rule_profile: Literal["demo-v2.1"] = "demo-v2.1"
+    rule_profile: Literal["demo-v2.1", "demo-v2.2"] = "demo-v2.2"
     characters: list[CharacterReference] = Field(default_factory=list, max_length=8)
     objects: list[ObjectConfig] = Field(default_factory=list, max_length=1024)
     limits: Limits = Field(default_factory=Limits)

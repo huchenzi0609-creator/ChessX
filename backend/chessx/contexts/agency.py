@@ -60,6 +60,7 @@ def navigation(
     *,
     turn: int | None = None,
     spatial_memory: dict | None = None,
+    rules_state: dict | None = None,
 ) -> dict:
     own, board = observation["self"], observation["board"]
     origin = own["position"]
@@ -111,14 +112,16 @@ def navigation(
         "rest_at_turn_start": own["rest_at_start"],
         "geometric_move_targets": targets,
         "target_format": "Each pair is [row,col]; emit move with target={row:R,col:C}. Targets are unranked, exclude waiting, and do NOT guarantee an unobstructed path.",
-        "movement_options": movement_options(observation, targets),
+        "movement_options": movement_options(observation, targets, rules_state=rules_state),
         "movement_options_scope": "Up to 12 examples; complete targets above. Contacts require negotiation; unknown cells may be occupied. Choose by your own purpose.",
         **spatial,
-        "toward_known_people": approach_options(observation, targets, spatial["known_locations"]),
+        "toward_known_people": approach_options(
+            observation, targets, spatial["known_locations"], rules_state=rules_state
+        ),
         "toward_known_people_scope": "Optional legal next steps toward YOUR remembered place, not mandatory targets or live tracking. distance_before/after are geometric. already_visible people may be invited without moving into their occupied cell. A past sighting may now be empty; unknown path cells are not guaranteed free.",
         "unseen_locations": "last_seen is your dated sighting, not live tracking. Reports are unverified; unseen current positions are unknown.",
         "conversation_blocks_movement": False,
         "movement_leaves_conversation": True,
         "recent_consecutive_waits": waits,
-        "travel_cost": "Successful knight move rests 3 turns; other moves rest max(|delta_row|,|delta_col|). Short moves cost less rest. Obstacles are handled by contact negotiation.",
+        "travel_cost": "Actual travel rests max(|delta_row|,|delta_col|); blocked moves rest0. Consult rest_turns_if_success for the frozen world policy. Obstacles are handled by contact negotiation.",
     }

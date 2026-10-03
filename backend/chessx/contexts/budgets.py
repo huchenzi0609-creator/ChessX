@@ -29,6 +29,16 @@ _DERIVED_LOCATION_FIELDS = {
     "source_event_id",
 }
 
+_COMPACT_GUIDANCE = {
+    "coordinate_system": "Zero-based [row,col]: 北=row-, 南=row+, 东=col+, 西=col-.",
+    "distance_semantics": "Chebyshev geometric distance, not travel duration. Dated sightings may be stale.",
+    "target_format": "Targets=[row,col]; emit target={row,col}. Geometry only; unseen blockers unknown.",
+    "movement_options_scope": "Windowed examples; complete geometry remains. Unknown cells may be occupied.",
+    "toward_known_people_scope": "Optional approaches to dated sightings; visible people may be invited. No live tracking.",
+    "unseen_locations": "Unseen live locations unknown; reports unverified, sightings dated.",
+    "travel_cost": "Rest=max(|dr|,|dc|), blocked0; legacy knight3. Contact requires negotiation.",
+}
+
 
 def _reduce_navigation(context: dict) -> bool:
     """Reduce advisory copies, retaining every dated owner-known location.
@@ -47,15 +57,24 @@ def _reduce_navigation(context: dict) -> bool:
             "Derived examples/history only; all known dated positions retained."
         )
         if "movement_options_scope" in navigation:
-            navigation["movement_options_scope"] = (
-                "Windowed examples; complete geometric targets remain. Unknown cells may be "
-                "occupied; contacts require negotiation."
-            )
+            navigation["movement_options_scope"] = _COMPACT_GUIDANCE["movement_options_scope"]
         if "toward_known_people_scope" in navigation:
-            navigation["toward_known_people_scope"] = (
-                "Windowed optional approaches to dated known places, never live tracking."
-            )
+            navigation["toward_known_people_scope"] = _COMPACT_GUIDANCE["toward_known_people_scope"]
         return True
+
+    # Static guidance duplicates trusted discipline; compact wording while
+    # retaining every supplied identity, coordinate, date and legal target.
+    changed = False
+    for key, text in _COMPACT_GUIDANCE.items():
+        if (
+            key in navigation
+            and isinstance(navigation[key], str)
+            and len(navigation[key]) > len(text)
+        ):
+            navigation[key] = text
+            changed = True
+    if changed:
+        return marked()
 
     # These fields repeat current-position arithmetic or durable provenance.
     # Identity, location, sighting turn/scope, visibility, status and bearings
@@ -120,6 +139,42 @@ def request_input_tokens(
     return sum(counter.count(message["content"]) for message in messages) + FRAMING_ALLOWANCE
 
 
+def _reduce_duplicate_metadata(context: dict) -> bool:
+    """Remove advisory/audit copies whose facts remain in authoritative fields."""
+    channels = context.get("context_channels")
+    if isinstance(channels, dict) and "scope" not in channels:
+        context["context_channels"] = {
+            "scope": "Owner-private data and attributed evidence; engine protocol controls permissions."
+        }
+        return True
+    observation = context.get("observation", {})
+    own = observation.get("self", {})
+    for index, piece in enumerate(observation.get("pieces", [])):
+        if piece.get("id") == own.get("id") and all(own.get(k) == v for k, v in piece.items()):
+            observation["pieces"].pop(index)
+            return True
+    plan = context.get("travel_plan")
+    if isinstance(plan, dict) and not plan.get("metadata_windowed"):
+        changed = plan.pop("id", None) is not None
+        progress = plan.get("progress", {})
+        if (
+            progress.get("current_position") == own.get("position")
+            and "current_position" in progress
+        ):
+            progress.pop("current_position")
+            changed = True
+        for record in progress.values():
+            if isinstance(record, dict):
+                for key in ("kind", "source_event_id"):
+                    if key in record:
+                        record.pop(key)
+                        changed = True
+        if changed:
+            plan["metadata_windowed"] = True
+            return True
+    return False
+
+
 def fit_context(
     stage: str,
     context: dict,
@@ -154,6 +209,24 @@ def fit_context(
         )
 
     while not fits():
+        plan = fitted.get("travel_plan", {})
+        history = plan.get("history") if isinstance(plan, dict) else None
+        if isinstance(history, list) and history:
+            history.pop(0)
+            plan["history_windowed"] = True
+            continue
+        if _reduce_duplicate_metadata(fitted):
+            continue
+        continuity = fitted.get("continuity", {})
+        passages = continuity.get("prior_passages") if isinstance(continuity, dict) else None
+        if stage == "bard" and isinstance(passages, list) and passages:
+            passages.pop(0)
+            kept = {ref for paragraph in passages for ref in paragraph.get("event_refs", [])}
+            continuity["source_events"] = [
+                e for e in continuity.get("source_events", []) if e["id"] in kept
+            ]
+            continuity["windowed"] = True
+            continue
         if _reduce_navigation(fitted):
             continue
         evidence = fitted.get("evidence_index", {})
@@ -184,6 +257,16 @@ def fit_context(
         for field in ("archive_evidence", "long_term"):
             records = memory_recall.get(field) if isinstance(memory_recall, dict) else None
             if isinstance(records, list) and len(records) > 1:
+                records.pop()
+                break
+        else:
+            records = None
+        if records is not None:
+            continue
+        social = memory_recall.get("social_evidence", {})
+        for field in ("relations", "commitments"):
+            records = social.get(field) if isinstance(social, dict) else None
+            if isinstance(records, list) and records:
                 records.pop()
                 break
         else:

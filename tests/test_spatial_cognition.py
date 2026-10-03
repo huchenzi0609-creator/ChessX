@@ -10,7 +10,7 @@ from chessx.contexts.spatial import relative_position, spatial_recall
 
 def observation(kind="rook", position=None):
     position = position or {"row": 3, "col": 3}
-    radius = 2 if kind == "knight" else 1
+    radius = 1
     return {
         "self": {
             "id": "a",
@@ -87,7 +87,7 @@ def test_knight_actual_journey_has_only_two_endpoints_and_no_fake_visited_cells(
         (1, 4),
     }
     assert receipts == before
-    assert all(option["rest_turns_if_success"] == 3 for option in result["movement_options"])
+    assert all(option["rest_turns_if_success"] == 2 for option in result["movement_options"])
 
 
 def test_last_visible_path_sighting_keeps_age_provenance_and_does_not_claim_destination():
@@ -256,7 +256,7 @@ def test_approach_candidates_follow_geometry_and_make_progress_toward_old_sighti
             candidate["progress_steps"] == approach["distance_before"] - candidate["distance_after"]
         )
         assert candidate["rest_turns_if_success"] == (
-            3
+            2
             if kind == "knight"
             else max(abs(candidate["target"][0] - 3), abs(candidate["target"][1] - 3))
         )

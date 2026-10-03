@@ -1,6 +1,7 @@
 """Geometry, occupancy and turn-based rest. Color never affects geometry."""
 
 from chessx.domain.errors import RuleError
+from chessx.domain.profile import is_legacy_rules
 
 
 def live_piece(state: dict, piece_id: str) -> dict:
@@ -96,14 +97,16 @@ def trace_path(piece: dict, target: dict) -> list[dict]:
     ]
 
 
-def movement_rest(piece: dict, origin: dict, dest: dict) -> int:
+def movement_rest(piece: dict, origin: dict, dest: dict, state: dict | None = None) -> int:
     distance = max(abs(dest["row"] - origin["row"]), abs(dest["col"] - origin["col"]))
-    return 0 if distance == 0 else 3 if piece["type"] == "knight" else distance
+    if distance and state is not None and is_legacy_rules(state) and piece["type"] == "knight":
+        return 3
+    return distance
 
 
 def visible_positions(state: dict, pid: str) -> list[dict]:
     piece = live_piece(state, pid)
-    radius = 2 if piece["type"] == "knight" else 1
+    radius = 2 if is_legacy_rules(state) and piece["type"] == "knight" else 1
     row, col = piece["position"]["row"], piece["position"]["col"]
     return [
         {"row": r, "col": c}
@@ -159,7 +162,7 @@ def commit_move(state: dict, pid: str, target: dict) -> list[dict]:
     origin = dict(piece["position"])
     path = trace_path(piece, target)
     piece["position"] = dict(target)
-    piece["rest_remaining"] = movement_rest(piece, origin, target)
+    piece["rest_remaining"] = movement_rest(piece, origin, target, state)
     return [
         {
             "type": "MoveCommitted",

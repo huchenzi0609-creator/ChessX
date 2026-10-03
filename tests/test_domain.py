@@ -202,7 +202,7 @@ def test_rule_manifest_is_frozen_copied_and_verified_on_world_commit():
     one = create_world(scenario, {}, "one")
     two = create_world(scenario, {}, "two")
     assert one["rule_manifest_hash"] == RULE_MANIFEST_HASH == manifest_hash(one["rule_manifest"])
-    assert len(one["rule_manifest"]["selections"]) == 16
+    assert len(one["rule_manifest"]["selections"]) == 17
     one["rule_manifest"]["selections"]["R10"] = "neutrals_allowed"
     assert two["rule_manifest"] == frozen_rule_manifest()
     with pytest.raises(RuleError) as error:

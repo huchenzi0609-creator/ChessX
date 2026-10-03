@@ -4,6 +4,11 @@ This directory is the sole project repository. Never initialize or modify reposi
 The frozen specification is docs/ChessX-Spec-v2.1.md. Rules are value-neutral; never add HP,
 loyalty scores, dice winners, remote joins, neutral battle participants, or implicit object creation.
 
+Human-approved 2026-10-03 overrides are documented in docs/EXECUTION_POLICY.md:
+new worlds use demo-v2.2, ordinary speech10 per actor/turn, conversation cap50*peak members,
+all-piece Chebyshev rest and radius1 vision. Legacy saves require explicit policy upgrade;
+storage format migration must never silently change historical rules or pending protocols.
+
 ## Ownership and integration
 - Domain/rules: strict models, pure geometry, legal mutations and invariants.
 - LLM/contexts: provider capabilities, exposed-CoT validation, audience and prompt isolation.

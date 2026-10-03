@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 
+from chessx.domain.profile import is_legacy_rules
 from chessx.domain.scenarios import frozen_discipline
 
 from .agency import dialogue_recall, navigation, pending_move_context
@@ -52,6 +53,10 @@ PROTOCOL_FIELDS = {
     "latest_proposals",
     "latest_message",
     "conversation_version",
+    "peak_members",
+    "remaining_speeches_this_world_turn",
+    "remaining_permissions_this_world_turn",
+    "governance_available",
 }
 
 
@@ -68,6 +73,11 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
         discipline, discipline_hash = frozen_discipline()
     observation = observe(state, pid)
     receipts = state.get("receipts", {}).get(pid, [])
+    plan = deepcopy(private.get("travel_plan"))
+    if plan:
+        plan["history_count"] = len(plan.get("history", []))
+        plan["history"] = plan.get("history", [])[-3:]
+        plan["history_windowed"] = plan["history_count"] > len(plan["history"])
     return {
         "discipline": discipline,
         "discipline_hash": discipline_hash,
@@ -86,8 +96,16 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
         "rules": {
             "limits": deepcopy(state.get("limits", {})),
             "movement": "king:8 neighbors; queen:orthogonal/diagonal; rook:orthogonal; bishop:diagonal; knight:(1,2)/(2,1) jump endpoints only; pawn:4 orthogonal neighbors, diagonal1 only onto living occupant, threats:4 diagonals. No promotion.",
-            "rest": "Actual move rests max(|dr|,|dc|); knight success3, blocked0. Turn-start rest blocks move/invite all turn; stationary actions allowed.",
-            "interactions": "Occupied routes require contact negotiation. Endpoint co-location:equal. Equal/neither-threat requires agreement; unilateral advantage decides passage. Max50 messages; no eavesdropping.",
+            "rest": "Actual move rests max(|dr|,|dc|); blocked0. "
+            + ("Legacy knight success3. " if is_legacy_rules(state) else "Knight success2. ")
+            + "Turn-start rest blocks move/invite all turn; stationary actions allowed.",
+            "interactions": "Occupied routes require contact negotiation. Endpoint co-location:equal. Equal/neither-threat requires agreement; unilateral advantage decides passage. "
+            + (
+                "Max50 messages. "
+                if is_legacy_rules(state)
+                else "Conversation cap=50*peak simultaneous members; ordinary speech up to10 per actor per world turn, shared across conversations. "
+            )
+            + "No eavesdropping; stage protocol supplies remaining permissions.",
             "combat": "Failed negotiation may battle. Join only by arriving at active anchor; broadcast is information. Everyone wins/loses, no neutral. Any winner may execute; release unanimous. No attack/HP/dice/color strength.",
             "objects": "No creation/destruction/auto-pickup. Ground locally visible; inventories owner-only. Transfer can be rejected; original holder retained.",
         },
@@ -110,6 +128,7 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
             else {}
         ),
         "goals": private.get("goals", ""),
+        "travel_plan": plan,
         "receipts": deepcopy(
             [
                 r
@@ -128,6 +147,7 @@ def build_context(state, pid: str, stage: str, extra: dict | None = None) -> dic
                         stage,
                         turn=state.get("turn", 0),
                         spatial_memory=private.get("spatial_memory"),
+                        rules_state=state,
                     ),
                     **pending_move_context(
                         observation, pid, stage, protocol, state.get("cursor", {}).get("work")
@@ -171,14 +191,7 @@ def battle_context(state, battle: dict) -> dict:
         "participant_memories": [
             {
                 "owner_id": pid,
-                "memory": "\n\n".join(
-                    text
-                    for text in (
-                        state.get("private", {}).get(pid, {}).get("initial_memory", ""),
-                        state.get("private", {}).get(pid, {}).get("memory", ""),
-                    )
-                    if text
-                ),
+                "memory": state.get("private", {}).get(pid, {}).get("memory", ""),
             }
             for pid in members
         ],
@@ -206,7 +219,8 @@ def battle_context(state, battle: dict) -> dict:
             )
             if key in battle
         },
-        "instruction": "Participant memories are separately sourced subjective accounts. Do not publish private recollections or hidden motives; public_narrative must report observable battle developments only. Death occurs exclusively in settlement.",
+        "read_scope": "Participant subjective memory only; persona, initial memories, goals, private plans, inventories and private evidence archives are unavailable.",
+        "instruction": "Participant memories are separately sourced subjective accounts, not truth. Do not infer missing backstories or hidden motives. Do not publish private recollections or motives; public_narrative must report observable battle developments only. Death occurs exclusively in settlement.",
     }
 
 
@@ -238,6 +252,9 @@ def bard_context(state, start_seq: int, end_seq: int, events: list[dict]) -> dic
         "ModelCapabilityVerified",
         "NegotiationPermissionUsed",
         "SettlementPermissionPassed",
+        "WorldMetadataUpgraded",
+        "ExecutionPolicyUpgraded",
+        "TechnicalFailure",
     }
     public_keys = {
         "piece_id",

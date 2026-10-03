@@ -1,7 +1,12 @@
 """Fail-fast integrity checks run before every persistent state commit."""
 
 from chessx.domain.errors import RuleError
-from chessx.domain.profile import RULE_MANIFEST_HASH, frozen_rule_manifest, manifest_hash
+from chessx.domain.profile import (
+    SUPPORTED_RULE_PROFILES,
+    conversation_message_budget,
+    frozen_rule_manifest,
+    manifest_hash,
+)
 from chessx.rules.actions import validate_battle_partition
 from chessx.rules.geometry import inside_board
 
@@ -13,17 +18,20 @@ def require(condition: bool, message: str) -> None:
 
 def assert_invariants(state: dict) -> None:
     pieces = state["pieces"]
+    profile = state["rule_profile"]
+    require(profile in SUPPORTED_RULE_PROFILES, "Unsupported world rule profile")
+    expected_manifest = frozen_rule_manifest(profile)
+    expected_hash = manifest_hash(expected_manifest)
     require(
-        state["rule_version"] == "2.1" and state["rule_profile"] == "demo-v2.1",
-        "Unsupported world rule version",
+        state["rule_version"] == expected_manifest["spec_version"], "Unsupported world rule version"
     )
     require(
-        state.get("rule_manifest") == frozen_rule_manifest(),
+        state.get("rule_manifest") == expected_manifest,
         "World rule manifest differs from the frozen profile",
     )
     require(
-        state.get("rule_manifest_hash") == RULE_MANIFEST_HASH
-        and manifest_hash(state["rule_manifest"]) == RULE_MANIFEST_HASH,
+        state.get("rule_manifest_hash") == expected_hash
+        and manifest_hash(state["rule_manifest"]) == expected_hash,
         "World rule manifest hash is inconsistent",
     )
     for field in ("turn", "completed_turn", "seq", "generation"):
@@ -114,7 +122,7 @@ def assert_invariants(state: dict) -> None:
                 "Conversation message count is inconsistent",
             )
         require(
-            0 <= count <= state["limits"]["conversation_max_messages"],
+            0 <= count <= conversation_message_budget(state, conv),
             "Conversation exceeded its message budget",
         )
     seen_members = set()

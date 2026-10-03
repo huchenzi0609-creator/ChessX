@@ -8,8 +8,23 @@ from copy import deepcopy
 from uuid import uuid4
 
 from chessx.domain.errors import RuleError
+from chessx.domain.profile import is_legacy_rules
 from chessx.rules.actions import event
 from chessx.rules.geometry import visible_positions
+from chessx.runtime.conversations import (
+    advance_idle_world_turn,
+    exhausted,
+    finish_protocol,
+    merge_history,
+    message_budget,
+    ordinary_eligible,
+    ordinary_permission_context,
+    ordinary_slot,
+    ordinary_usage,
+    protocol_state,
+    record_message,
+    update_members,
+)
 
 STAY_SCHEMA = {
     "type": "object",
@@ -41,12 +56,10 @@ class DialogueMixin:
         for pid in audience:
             if state["pieces"][pid].get("conversation_id") == conv["id"]:
                 state["pieces"][pid]["conversation_id"] = None
+        finish_protocol(state, conv)
         conv.update(
-            status="closed",
             members=[],
             pending_proposal=None,
-            last_active_turn=state["turn"],
-            closed_turn=state["turn"],
         )
         return [
             event(
@@ -59,6 +72,7 @@ class DialogueMixin:
 
     def _leave_ordinary(self, state: dict, conv: dict, pid: str) -> list[dict]:
         audience = list(conv["members"])
+        update_members(state, conv, audience)
         conv["members"] = [member for member in audience if member != pid]
         state["pieces"][pid]["conversation_id"] = None
         conv["pending_proposal"] = None
@@ -118,9 +132,8 @@ class DialogueMixin:
             own_party = list(state["conversations"][a_id]["members"]) if a_id else [actor]
             target_party = list(state["conversations"][b_id]["members"]) if b_id else [target]
             members = list(dict.fromkeys([actor] + own_party + target_party))
-            counted = set().union(
-                *(set(parent.get("counted_message_ids", [])) for parent in parents)
-            )
+            history = merge_history(parents, members)
+            counted = set(history["counted_message_ids"])
             kicks = set().union(*(set(parent.get("kick_used_by", [])) for parent in parents))
             last_spoke = {}
             for parent in parents:
@@ -129,7 +142,7 @@ class DialogueMixin:
             drafts = []
             for parent in parents:
                 drafts.extend(self._close_conversation(state, parent, "merged"))
-            if len(counted) >= state["limits"]["conversation_max_messages"]:
+            if len(counted) >= message_budget(state, {**history, "members": members}):
                 self._invite_finish(state, work)
                 return drafts + [
                     event(
@@ -145,7 +158,8 @@ class DialogueMixin:
                 "kind": "ordinary",
                 "status": "active",
                 "members": members,
-                "participant_ids": list(members),
+                "participant_ids": history["participant_ids"],
+                "peak_members": history["peak_members"],
                 "initiator_id": actor,
                 "created_turn": state["turn"],
                 "last_active_turn": state["turn"],
@@ -162,6 +176,7 @@ class DialogueMixin:
                     (p.get("last_activity_turn", -1) for p in parents), default=-1
                 ),
             }
+            update_members(state, conv, members)
             state["conversations"][cid] = conv
             for pid in members:
                 pieces[pid]["conversation_id"] = cid
@@ -243,21 +258,15 @@ class DialogueMixin:
         eligible = [
             member
             for member in order
-            if member in conv["members"]
-            and member not in processed
-            and conv.get("last_spoke_turn", {}).get(member) != state["turn"]
+            if member in conv["members"] and ordinary_eligible(state, conv, member, work)
         ]
-        if not eligible:
-            if conv.get("last_idle_turn") != state["turn"]:
-                active = conv.get("last_activity_turn") == state["turn"]
-                conv["idle_turns"] = 0 if active else conv.get("idle_turns", 0) + 1
-                conv["last_idle_turn"] = state["turn"]
+        if exhausted(state, conv):
             work["done"] = True
-            return (
-                self._close_conversation(state, conv, "two_idle_turns")
-                if conv["idle_turns"] >= 2
-                else []
-            )
+            return self._close_conversation(state, conv, "message_limit")
+        if not eligible:
+            idle_exhausted = advance_idle_world_turn(state, conv)
+            work["done"] = True
+            return self._close_conversation(state, conv, "two_idle_turns") if idle_exhausted else []
         pid = eligible[0]
         conv.setdefault("last_spoke_turn", {})
         version = conv.get("speech_version", len(conv.get("messages", [])))
@@ -298,14 +307,15 @@ class DialogueMixin:
                     )
 
         protocol = {
+            **protocol_state(state, conv),
             "conversation_id": cid,
             "member_ids": list(conv["members"]),
             "conversation_version": version,
             "latest_message": deepcopy(latest),
             "message_count": len(conv["counted_message_ids"]),
             "instruction": "Respond to the LATEST message in this conversation, taking earlier remarks as background. If a new speaker just changed the point, reconsider rather than answering an older prompt as though nobody spoke. Talk as this person, address one new point, vary length with content. Do not echo plans or interrogate by default. Pass or leave are valid. Physical movement waits for a primary action. Never say source/citation numbers.",
-            "remaining_messages": state["limits"]["conversation_max_messages"]
-            - len(conv["counted_message_ids"]),
+            "remaining_messages": message_budget(state, conv) - len(conv["counted_message_ids"]),
+            **ordinary_permission_context(state, pid, conv),
         }
         race = getattr(self, "ask_ordinary_race", None)
         parallelism = getattr(getattr(self, "settings", None), "dialogue_parallelism", 1)
@@ -324,34 +334,31 @@ class DialogueMixin:
                 state,
                 pid,
                 "ordinary",
-                f"turn:{state['turn']}:ordinary:{cid}:{pid}",
+                ordinary_slot(state, cid, pid),
                 ORDINARY_SCHEMA,
                 protocol,
                 validator=lambda answer: validate(pid, answer),
             )
-        processed.append(pid)
+        if is_legacy_rules(state):
+            processed.append(pid)
+        else:
+            usage = ordinary_usage(state, pid)
+            usage["permissions"] += 1
+            if answer.get("speech"):
+                usage["speeches"] += 1
+            if answer["kind"] == "pass":
+                work.setdefault("passed_at_version", {})[pid] = version
+            # Rotate after the winner, while preserving the existing race winner semantics.
+            pivot = order.index(pid)
+            work["member_order"] = order[pivot + 1 :] + order[: pivot + 1]
         conv["last_spoke_turn"][pid] = state["turn"]
         work["member_index"] = len(processed)
         conv["last_active_turn"] = state["turn"]
         drafts = []
         if answer.get("speech"):
-            message_id = f"message_{uuid4().hex}"
-            message = {
-                "message_id": message_id,
-                "conversation_id": cid,
-                "speaker_id": pid,
-                "speaker_name": state["pieces"][pid].get("name", pid),
-                "speech": answer["speech"],
-                "turn": state["turn"],
-                "based_on_message_id": (latest or {}).get("message_id", (latest or {}).get("id")),
-                "conversation_version": version,
-            }
-            conv.setdefault("messages", []).append(deepcopy(message))
-            conv["counted_message_ids"].append(message_id)
-            conv["last_activity_turn"] = state["turn"]
-            conv["speech_version"] = version + 1
+            message = record_message(state, conv, pid, answer["speech"])
             drafts.append(event("ConversationMessage", pid, message, list(conv["members"])))
-            if len(conv["counted_message_ids"]) >= state["limits"]["conversation_max_messages"]:
+            if exhausted(state, conv):
                 return drafts + self._close_conversation(state, conv, "message_limit")
         if answer["kind"] == "leave":
             return drafts + self._leave_ordinary(state, conv, pid)

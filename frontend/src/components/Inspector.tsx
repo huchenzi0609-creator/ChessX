@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import Operations from './Operations';
 import {
   asText,
   pieceLabels,
@@ -102,6 +103,10 @@ export default function Inspector({
                 <summary>目标 · v{privateData.goal_version ?? '—'}</summary>
                 <pre>{asText(privateData.goals)}</pre>
               </details>
+              <details>
+                <summary>跨回合私人行动计划</summary>
+                <pre>{asText(privateData.travel_plan)}</pre>
+              </details>
             </div>
           )}
           {research && (
@@ -128,6 +133,7 @@ export default function Inspector({
       ) : (
         <p className="muted">在棋盘或角色列表中选择。位置、休息状态及可见记录将在此显示。</p>
       )}
+      {research && <Operations worldId={worldId} />}
     </aside>
   );
 }

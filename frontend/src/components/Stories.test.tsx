@@ -2,6 +2,8 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import Stories from './Stories';
 import type { World } from '../lib/types';
+import { api } from '../lib/api';
+vi.mock('../lib/api', () => ({ api: { story: vi.fn(), generateStory: vi.fn() } }));
 describe('story evidence navigation', () => {
   it('renders paragraph prose and connects each citation to its original event', () => {
     const navigate = vi.fn();
@@ -89,5 +91,38 @@ describe('story evidence navigation', () => {
       />,
     );
     expect(screen.getByRole('button', { name: '正在编排…' })).toBeDisabled();
+  });
+  it('loads metadata-only story text only when requested and keeps citations available', async () => {
+    vi.mocked(api.story).mockResolvedValue({
+      segment_id: 's',
+      revision: 2,
+      title: '续章',
+      paragraphs: [{ text: '按需读取的故事正文。', event_refs: ['w:4'] }],
+    });
+    const navigate = vi.fn();
+    const world: World = {
+      world_id: 'w',
+      mode: 'fixture',
+      turn: 10,
+      seq: 100,
+      lifecycle: 'PAUSED_SEGMENT',
+      stories: {
+        s: {
+          segment_id: 's',
+          revision: 2,
+          title: '续章',
+          paragraph_count: 1,
+          content_available: true,
+        },
+      },
+      segments: [{ id: 's', status: 'paused' }],
+    };
+    render(<Stories world={world} onReference={navigate} onRefresh={vi.fn()} />);
+    expect(api.story).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByText('读取故事正文（1 段）'));
+    await screen.findByText('按需读取的故事正文。');
+    expect(api.story).toHaveBeenCalledWith('w', 's');
+    fireEvent.click(screen.getByRole('button', { name: 'w:4' }));
+    expect(navigate).toHaveBeenCalledWith('w:4');
   });
 });

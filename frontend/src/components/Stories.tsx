@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { asText, values, type RecordData, type World } from '../lib/types';
 import { Empty } from './Timeline';
@@ -13,6 +13,19 @@ export default function Stories({
 }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState<Record<string, { revision: string; body: RecordData }>>({});
+  const [loadingBody, setLoadingBody] = useState<string | null>(null);
+  const [storyLimit, setStoryLimit] = useState(20);
+  const [paragraphLimits, setParagraphLimits] = useState<Record<string, number>>({});
+  const scope = useRef(world.world_id);
+  scope.current = world.world_id;
+  useEffect(() => {
+    setLoaded({});
+    setParagraphLimits({});
+    setStoryLimit(20);
+    setError(null);
+    setLoadingBody(null);
+  }, [world.world_id]);
   const stories = values(world.stories);
   const segments = values(world.segments);
   const executing = world.lifecycle === 'RUNNING';
@@ -33,6 +46,25 @@ export default function Stories({
       setBusy(null);
     }
   }
+  async function loadBody(summary: RecordData) {
+    const id = String(summary.segment_id ?? summary.id);
+    const worldId = world.world_id;
+    setLoadingBody(id);
+    setError(null);
+    try {
+      const body = await api.story(worldId, id);
+      if (scope.current !== worldId) return;
+      setLoaded((current) => ({
+        ...current,
+        [id]: { revision: String(body.revision ?? summary.revision ?? 0), body },
+      }));
+    } catch (cause) {
+      if (scope.current === worldId)
+        setError(cause instanceof Error ? cause.message : '故事正文读取失败');
+    } finally {
+      if (scope.current === worldId) setLoadingBody(null);
+    }
+  }
   return (
     <div className="stories">
       {error && (
@@ -43,51 +75,83 @@ export default function Stories({
       {stories.length === 0 && pending.length === 0 && (
         <Empty>完成一段实验后，吟游诗人将编排有事件引用的故事。</Empty>
       )}
-      {stories.map((story, index) => (
-        <article className="story-card" key={String(story.story_id ?? story.id ?? index)}>
-          <span className="eyebrow">
-            {story.view === 'research' ? '全知研究版 · 不回灌角色' : '事件叙事版'} ·{' '}
-            {String(story.segment_id ?? '')}
-          </span>
-          <h3>{asText(story.title ?? `第 ${index + 1} 段`)}</h3>
-          {story.composition === 'ordered_chapters' && (
-            <p className="muted">分章成稿 · {asText(story.chapter_count)}章</p>
-          )}
-          {values(story.paragraphs as RecordData[] | undefined).length ? (
-            values(story.paragraphs as RecordData[]).map((paragraph, paragraphIndex) => (
-              <div className="story-paragraph" key={paragraphIndex}>
-                {values(story.chapters as RecordData[] | undefined)
-                  .filter((chapter) => chapter.paragraph_start === paragraphIndex)
-                  .map((chapter, chapterIndex) => (
-                    <h4 key={chapterIndex}>{asText(chapter.title)}</h4>
-                  ))}
-                <p className="story-prose">{asText(paragraph.text)}</p>
-                <References references={paragraph.event_refs} onReference={onReference} />
-              </div>
-            ))
-          ) : (
-            <p className="story-prose">
-              {asText(story.text ?? story.content ?? story.prose ?? '本段没有叙事正文。')}
-            </p>
-          )}
-          <References references={story.event_refs} onReference={onReference} />
-          {story.segment_id === (segments.at(-1)?.segment_id ?? segments.at(-1)?.id) && (
-            <button
-              className="story-regenerate"
-              disabled={busy !== null || executing}
-              onClick={() => void generate(story)}
-            >
-              {busy === story.segment_id
-                ? '正在请求…'
-                : executing && world.phase === 'BARD'
-                  ? '正在编排…'
-                  : pendingBard
-                    ? '继续编排'
-                    : '重编本段'}
-            </button>
-          )}
-        </article>
-      ))}
+      {stories
+        .slice(-storyLimit)
+        .reverse()
+        .map((summary, index) => {
+          const id = String(summary.segment_id ?? summary.id ?? index);
+          const cached = loaded[id];
+          const story = cached?.revision === String(summary.revision ?? 0) ? cached.body : summary;
+          const paragraphs = values(story.paragraphs as RecordData[] | undefined);
+          return (
+            <article className="story-card" key={String(story.story_id ?? story.id ?? index)}>
+              <span className="eyebrow">
+                {story.view === 'research' ? '全知研究版 · 不回灌角色' : '事件叙事版'} ·{' '}
+                {String(story.segment_id ?? '')}
+              </span>
+              <h3>{asText(story.title ?? `第 ${index + 1} 段`)}</h3>
+              {story.composition === 'ordered_chapters' && (
+                <p className="muted">分章成稿 · {asText(story.chapter_count)}章</p>
+              )}
+              {paragraphs.length ? (
+                paragraphs.slice(0, paragraphLimits[id] ?? 40).map((paragraph, paragraphIndex) => (
+                  <div className="story-paragraph" key={paragraphIndex}>
+                    {values(story.chapters as RecordData[] | undefined)
+                      .filter((chapter) => chapter.paragraph_start === paragraphIndex)
+                      .map((chapter, chapterIndex) => (
+                        <h4 key={chapterIndex}>{asText(chapter.title)}</h4>
+                      ))}
+                    <p className="story-prose">{asText(paragraph.text)}</p>
+                    <References references={paragraph.event_refs} onReference={onReference} />
+                  </div>
+                ))
+              ) : story.content_available ? (
+                <button disabled={loadingBody !== null} onClick={() => void loadBody(summary)}>
+                  {loadingBody === id
+                    ? '读取正文…'
+                    : `读取故事正文（${asText(summary.paragraph_count)} 段）`}
+                </button>
+              ) : (
+                <p className="story-prose">
+                  {asText(story.text ?? story.content ?? story.prose ?? '本段没有叙事正文。')}
+                </p>
+              )}
+              {paragraphs.length > (paragraphLimits[id] ?? 40) && (
+                <button
+                  onClick={() =>
+                    setParagraphLimits((current) => ({
+                      ...current,
+                      [id]: (current[id] ?? 40) + 40,
+                    }))
+                  }
+                >
+                  显示后续 40 段
+                </button>
+              )}
+              <References references={story.event_refs} onReference={onReference} />
+              {story.segment_id === (segments.at(-1)?.segment_id ?? segments.at(-1)?.id) && (
+                <button
+                  className="story-regenerate"
+                  disabled={busy !== null || executing}
+                  onClick={() => void generate(story)}
+                >
+                  {busy === story.segment_id
+                    ? '正在请求…'
+                    : executing && world.phase === 'BARD'
+                      ? '正在编排…'
+                      : pendingBard
+                        ? '继续编排'
+                        : '重编本段'}
+                </button>
+              )}
+            </article>
+          );
+        })}
+      {stories.length > storyLimit && (
+        <button onClick={() => setStoryLimit((current) => current + 20)}>
+          显示更早的 20 个故事
+        </button>
+      )}
       {pending.map((segment, index) => (
         <article key={String(segment.segment_id ?? segment.id ?? index)} className="story-card">
           <h3>片段 {asText(segment.segment_id ?? segment.id)}</h3>

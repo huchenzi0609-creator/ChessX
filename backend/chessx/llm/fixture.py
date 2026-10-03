@@ -24,6 +24,22 @@ class FixtureAdapter:
             content = fixture_response
         else:
             content = self._choose(stage, context)
+            if stage in {"action", "main_action", "decision"} and "PrivatePlan" in schema.get(
+                "$defs", {}
+            ):
+                current = context.get("travel_plan") or {}
+                if current.get("status") == "active":
+                    content["private_plan"] = {"decision": "keep"}
+                else:
+                    content["private_plan"] = {
+                        "decision": "revise",
+                        "purpose": "工程样例记录当前动作的意图。",
+                        "motive": "验证私人计划跨回合保存；这不是模型角色行为。",
+                        "next_step": f"执行样例动作：{content['kind']}。",
+                        "evidence_receipt_ids": [],
+                    }
+                    if content["kind"] == "move":
+                        content["private_plan"]["desired_position"] = content["target"]
         reasoning = f"Fixture trace: deterministic engineering response for stage {stage}; this is not AI reasoning."
         raw = json.dumps(content, ensure_ascii=False)
         validated = validate_output(

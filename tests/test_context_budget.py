@@ -111,7 +111,7 @@ def test_essential_character_or_narrator_inputs_never_silently_cut(counter, fiel
 
 def test_model_capacity_includes_formal_output_cot_and_framing(counter):
     context, schema = {"persona": "Anchor"}, {"type": "object"}
-    inputs = request_input_tokens("action", context, schema, counter)
+    inputs = request_input_tokens("action", context, schema, counter, 512)
     assert (
         fit_context(
             "action",

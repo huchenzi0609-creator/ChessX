@@ -18,7 +18,7 @@ from chessx.contexts import build_context
 from chessx.contexts.budgets import fit_context, request_input_tokens
 from chessx.domain.errors import RuleError
 from chessx.domain.models import Intent
-from chessx.domain.profile import RULE_MANIFEST_HASH, frozen_rule_manifest
+from chessx.domain.profile import frozen_rule_manifest, profile_manifest_hash
 from chessx.llm import FixtureAdapter, ModelError, ProviderAdapter
 from chessx.llm.feedback import validation_feedback
 from chessx.llm.provider import CHARACTER_BEHAVIOR_VERSION, STAGE_OUTPUT_LIMITS, prompt_manifest
@@ -31,7 +31,15 @@ from chessx.runtime.compaction import CompactionMixin
 from chessx.runtime.dialogue import DialogueMixin
 from chessx.runtime.dialogue_race import DialogueRaceMixin
 from chessx.runtime.movement import MovementMixin
+from chessx.runtime.plans import (
+    action_schema,
+    apply_plan,
+    record_plan_progress,
+    split_action_result,
+    validate_plan,
+)
 from chessx.runtime.story import StoryMixin
+from chessx.runtime.versioning import policy_is_current
 from chessx.storage.store import ConflictError, Store, canonical, digest
 
 INTENTS = TypeAdapter(Intent)
@@ -86,12 +94,21 @@ class WorldRunner(
                 self.adapters[wid] = self._live_adapter
         return self.adapters[wid]
 
+    def execution_binding(self, state):
+        """Shared by planning/reservation and the actual request, never a new fact."""
+        return {
+            "execution_policy_hash": state.get("execution_policy_hash"),
+            "expected_state_hash": digest(self.store.get(state["world_id"])),
+            "expected_seq": state["seq"],
+            "expected_generation": state["generation"],
+        }
+
     def recover(self):
         for state in self.store.list_worlds():
             if state.get("rule_profile") == "demo-v2.1" and "rule_manifest" not in state:
                 old_seq, old_gen = state["seq"], state["generation"]
-                state["rule_manifest"] = frozen_rule_manifest()
-                state["rule_manifest_hash"] = RULE_MANIFEST_HASH
+                state["rule_manifest"] = frozen_rule_manifest("demo-v2.1")
+                state["rule_manifest_hash"] = profile_manifest_hash("demo-v2.1")
                 state = self.store.commit(
                     state,
                     [
@@ -166,6 +183,44 @@ class WorldRunner(
         if kind not in {"run", "resume", "retry", "step_event", "step_turn"}:
             self.store.finish_command(wid, body["command_id"], "rejected", "COMMAND_INVALID")
             raise RuleError("COMMAND_INVALID", "Unsupported command")
+        if not policy_is_current(state):
+            self.store.finish_command(
+                wid, body["command_id"], "rejected", "POLICY_UPGRADE_REQUIRED"
+            )
+            raise RuleError(
+                "POLICY_UPGRADE_REQUIRED",
+                "Review and explicitly upgrade this saved world's execution policy before running.",
+            )
+        if state.get("prompt_hash") not in {None, self.prompt_manifest_hash}:
+            self.store.finish_command(
+                wid, body["command_id"], "rejected", "PROMPT_UPGRADE_REQUIRED"
+            )
+            raise RuleError(
+                "PROMPT_UPGRADE_REQUIRED",
+                "The saved prompt contract differs from this server; review the policy upgrade before running.",
+            )
+        frozen_config = state.get("execution_config", {})
+        if state["mode"] == "live" and any(
+            value != getattr(self.settings, key, None) for key, value in frozen_config.items()
+        ):
+            self.store.finish_command(
+                wid, body["command_id"], "rejected", "CONFIG_UPGRADE_REQUIRED"
+            )
+            raise RuleError(
+                "CONFIG_UPGRADE_REQUIRED",
+                "The saved execution configuration differs; explicitly upgrade it before running.",
+            )
+        if state["mode"] == "live" and state.get("provider_endpoint_hash") not in {
+            None,
+            digest(self.settings.base_url),
+        }:
+            self.store.finish_command(
+                wid, body["command_id"], "rejected", "CONFIG_UPGRADE_REQUIRED"
+            )
+            raise RuleError(
+                "CONFIG_UPGRADE_REQUIRED",
+                "The provider endpoint identity changed; explicitly review the saved configuration.",
+            )
         count = body.get("turns", 1)
         budget = body.get("budget", {})
         state["budget"] = {
@@ -311,11 +366,14 @@ class WorldRunner(
         max_attempts=3,
         max_cot_retries=3,
         on_prepare=None,
+        context_validator=None,
     ):
         wid = state["world_id"]
         context = context or build_context(state, pid, stage, protocol)
         context = copy.deepcopy(context)
         context["stage"] = stage
+        binding = self.execution_binding(state)
+        context["execution_contract"] = binding
         key = self.settings.api_key.get_secret_value()
         if key and key in canonical(context):
             raise ModelError(
@@ -390,16 +448,28 @@ class WorldRunner(
                     state,
                     partial(adapter.generate, stage, context, schema, max_output_tokens=maximum),
                 )
+                usage = {
+                    key: getattr(result, key)
+                    for key in ("input_tokens", "output_tokens", "reasoning_tokens")
+                }
+                self.store.record_operation_usage(wid, slot, attempt, usage)
+                for key, count in usage.items():
+                    state["usage"][key] += count
                 current = self.store.get(wid)
-                if current["generation"] != state["generation"] or current["seq"] != state["seq"]:
+                if (
+                    current["generation"] != state["generation"]
+                    or current["seq"] != state["seq"]
+                    or current.get("execution_policy_hash") != binding["execution_policy_hash"]
+                    or digest(current) != binding["expected_state_hash"]
+                ):
                     self.store.fail_operation(wid, slot, attempt, "STALE_GENERATION", True)
                     raise ConflictError()
                 if validator:
                     validator(result.content)
+                if context_validator:
+                    context_validator(result.content, context)
                 if pid is not None:
                     validate_character_speech(result.content, context, stage)
-                for key in ("input_tokens", "output_tokens", "reasoning_tokens"):
-                    state["usage"][key] += getattr(result, key)
                 self._operation = (
                     slot,
                     attempt,
@@ -414,6 +484,7 @@ class WorldRunner(
                         "character_behavior_version": CHARACTER_BEHAVIOR_VERSION,
                         "requested_max_tokens": maximum + 1000,
                         "reasoning_token_limit": None if stage == "bard" else 1000,
+                        **binding,
                     },
                 )
                 return result.content
@@ -474,7 +545,13 @@ class WorldRunner(
             wid,
             slot,
             state["generation"],
-            {"stage": "capability_probe", "instruction": "Verify readiness without role secrets."},
+            {
+                "stage": "capability_probe",
+                "instruction": "Verify readiness without role secrets.",
+                "execution_policy_hash": state.get("execution_policy_hash"),
+                "expected_state_hash": digest(state),
+                "expected_seq": state["seq"],
+            },
         )
         try:
             capabilities = await self._within_wall_budget(state, adapter.probe)
@@ -492,7 +569,18 @@ class WorldRunner(
                 "reasoning_tokens": result.reasoning_tokens,
                 "prompt_manifest_hash": self.prompt_manifest_hash,
                 "requested_max_tokens": 384,
+                "execution_policy_hash": state.get("execution_policy_hash"),
+                "expected_state_hash": digest(state),
             }
+            self.store.record_operation_usage(
+                wid,
+                slot,
+                attempt,
+                {
+                    key: getattr(result, key)
+                    for key in ("input_tokens", "output_tokens", "reasoning_tokens")
+                },
+            )
             for key in ("input_tokens", "output_tokens", "reasoning_tokens"):
                 state["usage"][key] += getattr(result, key)
             self.store.db.execute(
@@ -521,6 +609,7 @@ class WorldRunner(
             if events is None:
                 events = await self.transition(state)
             self._audiences(before, state, events)
+            record_plan_progress(state, events)
             return self.store.commit(
                 state,
                 events,
@@ -704,18 +793,28 @@ class WorldRunner(
         work = cursor.get("work")
         if work is None:
             protocol = {
-                "instruction": "Choose one legal primary action for your own purpose. Read navigation and memory_recall; promised travel requires a real move. Known places and reported directions can guide searching; hidden live coordinates are unknown. A legal move leaves conversation without permission. Rest blocks move/invite. Wait remains valid; no compulsory travel or fabricated conflict.",
+                "instruction": "Choose one legal primary action serving your goals and private travel_plan. Review the plan through optional private_plan; omission preserves it. Read actual progress, rest, memory_recall and navigation; promised travel needs a real move. Only known identities and dated sightings are available, not hidden live coordinates. Legal movement leaves a conversation. Rest blocks move/invite; wait is valid without inventing conflict.",
                 "mode": state["mode"],
             }
+            validated_context = {}
+
+            def validate_private(result, fitted):
+                intent, plan = split_action_result(result)
+                self.validate_action(state, pid, intent)
+                validate_plan(state, pid, plan, fitted)
+                validated_context.update(fitted)
+
             result = await self.ask(
                 state,
                 pid,
                 "action",
                 f"turn:{state['turn']}:primary:{pid}",
-                schemas.ACTION,
+                action_schema(),
                 protocol,
-                validator=lambda data: self.validate_action(state, pid, data),
+                context_validator=validate_private,
             )
+            result, plan = split_action_result(result)
+            apply_plan(state, pid, plan, validated_context)
             cursor["work"] = {
                 "actor_id": pid,
                 "kind": result["kind"],

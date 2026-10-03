@@ -272,13 +272,13 @@ async def test_greedy_old_boundary_that_fits_without_stage_is_split_before_execu
     low, high = 0, 3000
     while low < high:
         words = (low + high + 1) // 2
-        records = [event(1, text="word " * 500), event(2, text="word " * words)]
+        records = [event(1, text="word " * 300), event(2, text="word " * words)]
         source = runner._story_input(current, segment, records)
         if request_input_tokens("bard", source, BARD, runner.model.counter) <= old_limit:
             low = words
         else:
             high = words - 1
-    records = [event(1, text="word " * 500), event(2, text="word " * low)]
+    records = [event(1, text="word " * 300), event(2, text="word " * low)]
     source = runner._story_input(current, segment, records)
     assert request_input_tokens("bard", source, BARD, runner.model.counter) <= old_limit
     source["stage"] = "bard"

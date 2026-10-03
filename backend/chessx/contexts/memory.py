@@ -6,7 +6,8 @@ from collections import Counter
 from copy import deepcopy
 
 from .agency import receipt_event
-from .projections import LANGUAGE_FIELDS, STRUCTURE_FIELDS
+from .projections import LANGUAGE_FIELDS, STRUCTURE_FIELDS, observe
+from .retrieval import alias_groups, expanded_terms, social_evidence
 
 NOISE = {
     "ActionChosen",
@@ -115,9 +116,20 @@ def recall(state, pid, extra=None, limit=6):
     receipts = state.get("receipts", {}).get(pid, [])
     latest = (extra or {}).get("latest_message") or {}
     speeches = [compact_receipt(r) for r in receipts if receipt_event(r)[0] not in NOISE]
-    query = " ".join([own.get("goals", ""), latest.get("speech", "")])
+    plan = own.get("travel_plan") or {}
+    query = " ".join(
+        [
+            own.get("goals", ""),
+            latest.get("speech", ""),
+            plan.get("purpose", ""),
+            plan.get("next_step", ""),
+            plan.get("target_person_id") or "",
+        ]
+    )
     recent = [r["payload"].get("speech", "") for r in speeches[-3:]]
-    query_terms = terms(query + " " + " ".join(recent))
+    aliases = alias_groups(own, receipts, observe(state, pid))
+    query_terms = expanded_terms(query, terms, aliases)
+    recent_terms = expanded_terms(" ".join(recent), terms, aliases) - query_terms
     docs = []
     seen = set()
     for r in speeches:
@@ -127,11 +139,14 @@ def recall(state, pid, extra=None, limit=6):
         if not text or text in seen:
             continue
         seen.add(text)
-        docs.append((r, text, terms(text)))
+        docs.append((r, text, expanded_terms(text, terms, aliases)))
     frequencies = Counter(t for _, _, ts in docs for t in ts)
     ranked = []
     for index, (r, text, ts) in enumerate(docs):
         score = sum(math.log(1 + len(docs) / (1 + frequencies[t])) for t in ts & query_terms)
+        score += 0.2 * sum(
+            math.log(1 + len(docs) / (1 + frequencies[t])) for t in ts & recent_terms
+        )
         if HIGH_SIGNAL.search(text):
             score += 2
         if score > 0:
@@ -141,7 +156,7 @@ def recall(state, pid, extra=None, limit=6):
     selected = sorted(
         entries,
         key=lambda e: (
-            -len(terms(e.get("text", "")) & query_terms),
+            -len(expanded_terms(e.get("text", ""), terms, aliases) & query_terms),
             e.get("salience") != "important",
             -(e.get("learned_turn") or 0),
         ),
@@ -149,5 +164,7 @@ def recall(state, pid, extra=None, limit=6):
     return {
         "long_term": [entry_context(entry) for entry in selected],
         "archive_evidence": [deepcopy(r) for _, _, r in ranked[:limit]],
+        "social_evidence": deepcopy(social_evidence(speeches, query_terms, terms)),
+        "retrieval_policy": "owner_alias_relation_commitment_v2",
         "scope": "Only this owner's received archive. A source proves you heard/observed it, not that a speaker's claim is true. Do not treat old positions as current; previously received news is not newly learned.",
     }

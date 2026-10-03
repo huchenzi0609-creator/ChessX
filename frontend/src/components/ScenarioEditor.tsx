@@ -187,13 +187,15 @@ export default function ScenarioEditor({ health, onCreated, onClose }: Props) {
                 : '模型与分词器已配置，运行前仍校验能力。'}
           </p>
           <div className="rule-card">
-            <span className="eyebrow">DEMO–V2.1</span>
+            <span className="eyebrow">DEMO–V2.2</span>
             <p>所有人物共用行为纪律，各自持有完整的私有 Markdown 记忆。</p>
             <ul>
               <li>0–8 个角色 · 8–64 行列棋盘</li>
               <li>公开目标也需通过人物言行展现</li>
               <li>跨组引用人物，按对局覆盖起点</li>
-              <li>会话与交涉至多 50 句</li>
+              <li>普通交谈每人每回合至多 10 句</li>
+              <li>会话总句数至多历史最多参与人数 × 50</li>
+              <li>所有棋子视野 3 × 3，移动休息按起终格距离</li>
               <li>战争消息不允许远程加入</li>
             </ul>
           </div>

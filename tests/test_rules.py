@@ -121,7 +121,7 @@ def test_knight_has_no_intermediate_path_and_origin_is_not_scanned():
     assert trace_path(state["pieces"]["0"], pos(3, 2)) == [pos(1, 1), pos(3, 2)]
     assert blocker_groups(state, "0", pos(3, 2)) == []
     assert movement_rest(state["pieces"]["0"], pos(1, 1), pos(1, 1)) == 0
-    assert movement_rest(state["pieces"]["0"], pos(1, 1), pos(3, 2)) == 3
+    assert movement_rest(state["pieces"]["0"], pos(1, 1), pos(3, 2)) == 2
 
 
 @pytest.mark.parametrize(
@@ -168,12 +168,12 @@ def test_rest_snapshot_blocks_until_following_turn_and_objects_remain_allowed():
     legal_move(state, "0", pos(0, 3))
 
 
-def test_knight_rest_is_three_turns_after_success_zero_after_no_displacement():
+def test_knight_rest_is_chebyshev_after_success_zero_after_no_displacement():
     state = world(types=("knight",), positions=[pos(1, 1)])
     commit_move(state, "0", pos(1, 1))
     assert state["pieces"]["0"]["rest_remaining"] == 0
     commit_move(state, "0", pos(3, 2))
-    for remaining in [2, 1, 0]:
+    for remaining in [1, 0]:
         begin_turn(state)
         assert state["pieces"]["0"]["rest_remaining"] == remaining
         with pytest.raises(RuleError):
@@ -191,7 +191,7 @@ def test_partial_slide_rest_uses_actual_displacement():
 def test_visibility_is_clipped_and_unoccluded():
     state = world(types=("rook", "knight"), positions=[pos(0, 0), pos(7, 7)])
     assert visible_positions(state, "0") == [pos(0, 0), pos(0, 1), pos(1, 0), pos(1, 1)]
-    assert len(visible_positions(state, "1")) == 9
+    assert len(visible_positions(state, "1")) == 4
 
 
 def test_negotiation_uses_geometry_only_and_aggregates_any_edge():

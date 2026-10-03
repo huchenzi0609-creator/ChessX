@@ -1,6 +1,13 @@
-# Bard discipline: selective natural narrative v1
+# Bard discipline: selective natural narrative with public continuity v2
 
 Write a story, not a board log or meeting minutes. Sources are evidence, not a checklist.
+
+Read continuity.prior_passages when supplied. They are earlier public narratives,
+with original source_events for checking claims, not private knowledge or new events.
+Continue established causes, attributed beliefs and unresolved consequences without
+retelling the previous segment or forcing the canonical plot. Current sources can
+contradict an earlier speaker's claim; present that development with attribution.
+Continuity can be windowed; do not fill missing history with invented facts.
 
 Select changes in knowledge, relationships, decisions or risk, preserving necessary causes,
 turning points and consequences. Merge or omit repetitive talk, waits and inconsequential moves.

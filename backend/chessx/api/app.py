@@ -2,20 +2,30 @@
 
 import asyncio
 import copy
-import io
-import zipfile
+import os
+import tempfile
+import threading
+import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from starlette.background import BackgroundTask
 
 from chessx.api.presets import register_presets
-from chessx.api.projections import observer, perspective, public_event
+from chessx.api.projections import (
+    conversation_messages,
+    observer,
+    perspective,
+    public_event,
+    receipt_page,
+)
 from chessx.config import ROOT, Settings
 from chessx.domain.errors import RuleError
 from chessx.domain.models import Scenario
@@ -24,8 +34,16 @@ from chessx.llm import ModelError
 from chessx.llm.provider import prompt_manifest
 from chessx.presets import PresetError, PresetLibrary
 from chessx.runtime.runner import WorldRunner
+from chessx.runtime.versioning import (
+    SAVE_SCHEMA_VERSION,
+    execution_policy_hash,
+    frozen_execution_policy,
+    policy_id,
+    upgrade_preview,
+)
 from chessx.storage import Store
-from chessx.storage.store import canonical, digest
+from chessx.storage.exporting import build_archive
+from chessx.storage.store import ConflictError, canonical, digest
 
 
 class CreateWorld(BaseModel):
@@ -54,21 +72,36 @@ class Export(BaseModel):
     view: Literal["observer", "research"] = "observer"
 
 
+class UpgradePolicy(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    expected_seq: int = Field(ge=0)
+
+
 def create_app(settings: Settings | None = None, *, store: Store | None = None) -> FastAPI:
     settings = settings or Settings.load()
 
     @asynccontextmanager
     async def lifespan(app):
         app.state.store = store or Store(settings.data_dir / "chessx.sqlite3")
+        # Export artifacts are temporary; backups live in a separate directory.
+        exports_dir = settings.data_dir / "exports"
+        if exports_dir.is_dir():
+            for pattern in ("archive_*.zip", "backup_*.sqlite3"):
+                for path in exports_dir.glob(pattern):
+                    path.unlink(missing_ok=True)
         app.state.runner = WorldRunner(app.state.store, settings)
         app.state.presets = PresetLibrary(ROOT / "presets", settings.data_dir / "presets")
         app.state.runner.recover()
         yield
         await app.state.runner.close()
+        for path, _filename, _expiry in downloads.values():
+            path.unlink(missing_ok=True)
+        downloads.clear()
         if store is None:
             app.state.store.close()
 
     app = FastAPI(title="ChessX", version="0.2.0", lifespan=lifespan)
+    downloads: dict[str, tuple[Path, str, float]] = {}
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[
@@ -77,7 +110,7 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             "http://localhost:8001",
             "http://127.0.0.1:8001",
         ],
-        allow_methods=["GET", "POST", "PUT"],
+        allow_methods=["GET", "POST", "PUT", "DELETE"],
         allow_headers=["Content-Type", "Last-Event-ID"],
     )
 
@@ -157,6 +190,128 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
         if key and key in canonical(value):
             raise HTTPException(422, "SECRET_IN_SCENARIO")
 
+    def task_running(wid):
+        task = app.state.runner.tasks.get(wid)
+        return task is not None and not task.done()
+
+    def maintenance_busy():
+        return (
+            any(not task.done() for task in app.state.runner.tasks.values())
+            or app.state.store.db.execute(
+                "SELECT COUNT(*) FROM operations WHERE status='pending'"
+            ).fetchone()[0]
+            > 0
+        )
+
+    async def background_backup(directory):
+        cancelled = threading.Event()
+
+        def work():
+            metadata = app.state.store.backup(directory)
+            if cancelled.is_set():
+                (directory / metadata["filename"]).unlink(missing_ok=True)
+            return metadata
+
+        task = asyncio.create_task(asyncio.to_thread(work))
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            cancelled.set()
+
+            def cleanup(completed):
+                if not completed.cancelled() and completed.exception() is None:
+                    (directory / completed.result()["filename"]).unlink(missing_ok=True)
+
+            task.add_done_callback(cleanup)
+            raise
+
+    def execution_config_snapshot():
+        # Explicit allowlist; neither secret nor raw provider URL is serialized.
+        value = settings.model_dump(
+            include={
+                "model",
+                "provider_profile",
+                "response_format",
+                "tokenizer_name",
+                "tokenizer_agreement",
+                "timeout_seconds",
+                "context_capacity",
+                "character_input_limit",
+                "dialogue_parallelism",
+                "memory_batch_size",
+                "memory_compaction_mode",
+            }
+        )
+        reject_embedded_key(value)
+        return value
+
+    def snapshot(value, *, current=True):
+        result = observer(value, compact=True)
+        store = app.state.store
+        calls = store.call_count(value["world_id"]) if current else value["usage"].get("calls", 0)
+        result["usage"]["calls"] = calls
+        pending = store.pending_metadata(value["world_id"]) if current else []
+        used_tokens = sum(
+            value["usage"].get(key, 0)
+            for key in ("input_tokens", "output_tokens", "reasoning_tokens")
+        )
+        limits = value.get("budget", {})
+        used_calls = max(0, calls - value.get("budget_base_calls", 0))
+        used_tokens = max(0, used_tokens - value.get("budget_base_tokens", 0))
+        active = task_running(value["world_id"]) if current else False
+        elapsed = (
+            max(0, time.monotonic() - getattr(app.state.runner, "_started_at", time.monotonic()))
+            if active
+            else None
+        )
+        waiting = (
+            "model_request"
+            if pending
+            else "executing"
+            if active
+            else value.get("error", {}).get("code")
+            if value.get("error")
+            else value.get("lifecycle", "idle").lower()
+        )
+        cursor = value.get("cursor", {})
+        result["runtime"] = {
+            "budget": {
+                "limits": copy.deepcopy(limits),
+                "used": {"calls": used_calls, "tokens": used_tokens, "wall_seconds": elapsed},
+                "remaining": {
+                    "calls": max(0, limits["max_calls"] - used_calls)
+                    if "max_calls" in limits
+                    else None,
+                    "tokens": max(0, limits["max_total_tokens"] - used_tokens)
+                    if "max_total_tokens" in limits
+                    else None,
+                    "wall_seconds": max(0, limits["max_wall_seconds"] - elapsed)
+                    if elapsed is not None and "max_wall_seconds" in limits
+                    else None,
+                },
+                "cost": {"known": False, "amount": None, "currency": None},
+                "usage_completeness": "known-recorded-tokens-only",
+                "unknown_usage_requests": store.unknown_usage_count(value["world_id"])
+                if current
+                else None,
+            },
+            "pending_requests": pending,
+            "waiting_reason": waiting,
+            "active_actor_id": pending[0].get("actor_id")
+            if pending
+            else cursor.get("work", {}).get("actor_id")
+            if cursor.get("work")
+            else None,
+            "active_stage": pending[0].get("stage")
+            if pending
+            else cursor.get("work", {}).get("stage")
+            if cursor.get("work")
+            else value.get("phase"),
+            "execution_policy": policy_id(value),
+            "save_schema_version": value.get("save_schema_version", 1),
+        }
+        return result
+
     @app.get("/api/health")
     async def health():
         return {
@@ -164,7 +319,9 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             "mode": "local",
             "model_configured": settings.configured,
             "tokenizer_agreement": settings.tokenizer_agreement,
-            "rule_version": "2.1",
+            "rule_version": "2.2",
+            "save_schema_version": SAVE_SCHEMA_VERSION,
+            "execution_policy": frozen_execution_policy()["id"],
         }
 
     @app.get("/api/scenarios")
@@ -251,17 +408,10 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
                 {"scenario": config.model_dump(), "rule_manifest": state["rule_manifest"]}
             ),
             scenario=config.model_dump(exclude_none=True),
-            model_config_hash=digest(
-                {
-                    "model": settings.model,
-                    "provider_profile": settings.provider_profile,
-                    "response_format": settings.response_format,
-                    "tokenizer": settings.tokenizer_name,
-                    "context_capacity": settings.context_capacity,
-                    "dialogue_parallelism": settings.dialogue_parallelism,
-                }
-            ),
+            model_config_hash=digest(execution_config_snapshot()),
+            provider_endpoint_hash=digest(settings.base_url),
             prompt_hash=digest(prompt_manifest()),
+            execution_config=execution_config_snapshot(),
         )
         if frozen_source is not None:
             if frozen_source.get("discipline") is not None:
@@ -290,7 +440,7 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
                     "payload": {
                         "title": state["title"],
                         "mode": state["mode"],
-                        "rule_version": "2.1",
+                        "rule_version": state["rule_version"],
                     },
                     "audience": [],
                 }
@@ -298,7 +448,7 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             expected_seq=0,
             expected_generation=0,
         )
-        return observer(state)
+        return snapshot(state)
 
     @app.post("/api/worlds", status_code=201)
     async def world(body: CreateWorld):
@@ -308,38 +458,216 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
 
     @app.get("/api/worlds")
     async def worlds():
-        return [
-            {
-                k: state[k]
-                for k in ("world_id", "lifecycle", "turn", "completed_turn", "title", "mode")
-            }
-            for state in app.state.store.list_worlds()
-        ]
+        return app.state.store.world_summaries()
 
     @app.get("/api/worlds/{wid}")
     async def state(wid: str):
-        value = observer(get_state(wid))
-        value["usage"]["calls"] = app.state.store.call_count(wid)
-        return value
+        return snapshot(get_state(wid))
+
+    @app.delete("/api/worlds/{wid}")
+    async def delete_world(wid: str):
+        get_state(wid)
+        if task_running(wid):
+            raise HTTPException(409, "WORLD_BUSY")
+        try:
+            app.state.store.delete_world(wid)
+        except ConflictError:
+            raise HTTPException(409, "WORLD_BUSY") from None
+        app.state.runner.adapters.pop(wid, None)
+        app.state.runner.tasks.pop(wid, None)
+        for token, (path, filename, _expiry) in list(downloads.items()):
+            if filename.startswith(wid + "-"):
+                path.unlink(missing_ok=True)
+                del downloads[token]
+        return {"deleted": True, "world_id": wid}
+
+    @app.post("/api/backups", status_code=201)
+    async def backup():
+        return await background_backup(settings.data_dir / "backups")
+
+    def preview_policy(wid):
+        value = get_state(wid)
+        return upgrade_preview(
+            value,
+            task_running=maintenance_busy(),
+            pending_operations=app.state.store.pending_count(wid),
+            prompt_changed=value.get("prompt_hash") != digest(prompt_manifest()),
+            config_changed=value.get("execution_config") != execution_config_snapshot()
+            or value.get("provider_endpoint_hash") != digest(settings.base_url),
+        )
+
+    @app.get("/api/worlds/{wid}/upgrade-policy")
+    async def policy_preview(wid: str):
+        return preview_policy(wid)
+
+    @app.post("/api/worlds/{wid}/upgrade-policy")
+    async def upgrade_policy(wid: str, body: UpgradePolicy):
+        value = get_state(wid)
+        preview = preview_policy(wid)
+        if body.expected_seq != value["seq"]:
+            raise HTTPException(409, "WORLD_CHANGED")
+        if not preview["can_upgrade"]:
+            return JSONResponse(
+                {"code": "POLICY_UPGRADE_BLOCKED", "preview": preview}, status_code=409
+            )
+        backup = app.state.store.backup(settings.data_dir / "backups")
+        from chessx.domain.profile import (
+            LATEST_RULE_PROFILE,
+            frozen_rule_manifest,
+            profile_manifest_hash,
+        )
+
+        if not preview["policy_current"]:
+            peaks = {}
+            for historical in app.state.store.iter_states(wid):
+                for cid, conv in historical.get("conversations", {}).items():
+                    peaks[cid] = max(
+                        peaks.get(cid, 0), len(conv.get("members", [])), conv.get("peak_members", 0)
+                    )
+            for cid, conv in value.get("conversations", {}).items():
+                conv["peak_members"] = max(
+                    peaks.get(cid, 0),
+                    len(conv.get("members", [])),
+                    conv.get("peak_members", 0),
+                    *(peaks.get(parent, 0) for parent in conv.get("parent_ids", [])),
+                )
+                conv["max_messages"] = 50 * conv["peak_members"]
+                conv.setdefault(
+                    "counted_message_ids",
+                    [
+                        message.get("message_id") or message["id"]
+                        for message in conv.get("messages", [])
+                    ],
+                )
+            speeches, counted = {}, set()
+            for conv in value.get("conversations", {}).values():
+                if conv.get("kind", "ordinary") != "ordinary":
+                    continue
+                for message in conv.get("messages", []):
+                    mid = message.get("message_id") or message.get("id")
+                    if message.get("turn") == value["turn"] and mid not in counted:
+                        counted.add(mid)
+                        pid = message.get("speaker_id")
+                        speeches[pid] = speeches.get(pid, 0) + 1
+            value["dialogue_permissions"] = {
+                "turn": value["turn"],
+                "actors": {
+                    pid: {"speeches": count, "permissions": count}
+                    for pid, count in speeches.items()
+                },
+            }
+        old_policy = policy_id(value)
+        previous_metadata = {
+            key: value.get(key)
+            for key in (
+                "execution_policy_hash",
+                "prompt_hash",
+                "model_config_hash",
+                "provider_endpoint_hash",
+            )
+        }
+        value.update(
+            save_schema_version=SAVE_SCHEMA_VERSION,
+            execution_policy=frozen_execution_policy(),
+            execution_policy_hash=execution_policy_hash(frozen_execution_policy()),
+            rule_profile=LATEST_RULE_PROFILE,
+            rule_version="2.2",
+            rule_manifest=frozen_rule_manifest(),
+            rule_manifest_hash=profile_manifest_hash(LATEST_RULE_PROFILE),
+            prompt_hash=digest(prompt_manifest()),
+            execution_config=execution_config_snapshot(),
+            model_config_hash=digest(execution_config_snapshot()),
+            provider_endpoint_hash=digest(settings.base_url),
+        )
+        value.setdefault("execution_history", []).append(
+            {
+                "from_seq": body.expected_seq,
+                "previous": previous_metadata,
+                "policy_id": old_policy,
+                "backup_id": backup["backup_id"],
+            }
+        )
+        value["generation"] += 1
+        value["error"] = None
+        if value["lifecycle"] == "PAUSED_ERROR":
+            value["lifecycle"] = "PAUSED"
+        value = app.state.store.commit(
+            value,
+            [
+                {
+                    "type": "ExecutionPolicyUpgraded",
+                    "payload": {
+                        "from_policy": old_policy,
+                        "to_policy": policy_id(value),
+                        "backup_id": backup["backup_id"],
+                    },
+                    "audience": [],
+                }
+            ],
+            expected_seq=body.expected_seq,
+            expected_generation=value["generation"] - 1,
+        )
+        return {"world": snapshot(value), "backup": backup}
+
+    @app.post("/api/worlds/{wid}/compact-journal")
+    async def compact_journal(wid: str):
+        value = get_state(wid)
+        if (
+            maintenance_busy()
+            or value["lifecycle"] in {"RUNNING", "STEPPING", "PAUSING"}
+            or app.state.store.pending_count(wid)
+        ):
+            raise HTTPException(409, "WORLD_BUSY")
+        backup = app.state.store.backup(settings.data_dir / "backups")
+        return {**app.state.store.compact_journal(wid), "backup": backup}
 
     @app.get("/api/worlds/{wid}/perspectives/{pid}")
-    async def role(wid: str, pid: str):
+    async def role(wid: str, pid: str, after_receipt: int | None = None, limit: int = 200):
         state = get_state(wid)
         if pid not in state["pieces"]:
             raise HTTPException(404, "PIECE_NOT_FOUND")
-        return perspective(state, pid)
+        return perspective(state, pid, after_receipt=after_receipt, limit=limit)
+
+    @app.get("/api/worlds/{wid}/perspectives/{pid}/receipts")
+    async def role_receipts(wid: str, pid: str, after_receipt: int = 0, limit: int = 200):
+        value = get_state(wid)
+        if pid not in value["pieces"]:
+            raise HTTPException(404, "PIECE_NOT_FOUND")
+        return {
+            "world_id": wid,
+            "piece_id": pid,
+            "seq": value["seq"],
+            **receipt_page(value, pid, after_receipt=after_receipt, limit=limit),
+        }
 
     @app.get("/api/worlds/{wid}/inspection/{pid}")
-    async def inspect(wid: str, pid: str):
+    async def inspect(wid: str, pid: str, before_id: int | None = None, limit: int = 20):
         state = get_state(wid)
         if pid not in state["pieces"]:
             raise HTTPException(404, "PIECE_NOT_FOUND")
         return {
             "piece_id": pid,
             "private": copy.deepcopy(state["private"][pid]),
-            "operations": app.state.store.operation_records(wid, pid),
+            **app.state.store.operation_page(
+                wid, actor_id=pid, before_id=before_id, limit=min(max(limit, 1), 200)
+            ),
             "research_only": True,
         }
+
+    @app.get("/api/worlds/{wid}/inspection")
+    async def inspect_operations(
+        wid: str,
+        actor_id: str | None = None,
+        stage: str | None = None,
+        before_id: int | None = None,
+        limit: int = 50,
+    ):
+        value = get_state(wid)
+        if actor_id is not None and actor_id not in value["pieces"]:
+            raise HTTPException(404, "PIECE_NOT_FOUND")
+        return app.state.store.operation_page(
+            wid, actor_id=actor_id, stage=stage, before_id=before_id, limit=min(max(limit, 1), 200)
+        )
 
     @app.post("/api/worlds/{wid}/commands", status_code=202)
     async def command(wid: str, body: Command):
@@ -383,28 +711,76 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
         page["events"] = [view for e in page["events"] if (view := public_event(e)) is not None]
         return page
 
+    @app.get("/api/worlds/{wid}/conversations/{cid}/messages")
+    async def message_history(
+        wid: str,
+        cid: str,
+        before_index: int | None = None,
+        limit: int = 50,
+        at_seq: int | None = None,
+    ):
+        value = get_state(wid)
+        if at_seq is not None:
+            try:
+                value = app.state.store.replay(wid, at_seq)
+            except KeyError:
+                raise HTTPException(404, "REPLAY_POINT_NOT_FOUND") from None
+        if cid not in value.get("conversations", {}):
+            raise HTTPException(404, "CONVERSATION_NOT_FOUND")
+        return {
+            "world_id": wid,
+            "conversation_id": cid,
+            "seq": value["seq"],
+            "turn": value["turn"],
+            "lifecycle": value["lifecycle"],
+            **conversation_messages(
+                value["conversations"][cid], before_index=before_index, limit=limit
+            ),
+        }
+
     @app.get("/api/worlds/{wid}/stream")
     async def stream(wid: str, request: Request, after_seq: int = 0):
-        get_state(wid)
+        initial = get_state(wid)
         header = request.headers.get("last-event-id", "")
         if header.startswith(wid + ":"):
             try:
                 after_seq = max(after_seq, int(header.split(":")[-1]))
             except ValueError:
                 pass
+        after_seq = min(max(after_seq, 0), initial["seq"])
 
         async def generate():
             cursor = after_seq
             while not await request.is_disconnected():
+                try:
+                    value = get_state(wid)
+                except HTTPException:
+                    yield "event: deleted\ndata: {}\n\n"
+                    return
                 page = app.state.store.events(wid, cursor, 200)
                 for event in page["events"]:
                     if (view := public_event(event)) is not None:
                         yield f"id: {event['event_id']}\nevent: world\ndata: {canonical(view)}\n\n"
                 cursor = page["next_cursor"]
+                # Catch-up pages expose the exact snapshot at their cursor. A
+                # live snapshot never races ahead of events already delivered.
+                if cursor < value["seq"]:
+                    try:
+                        value = app.state.store.replay(wid, cursor)
+                    except KeyError:
+                        yield "event: deleted\ndata: {}\n\n"
+                        return
+                    view = snapshot(value, current=False)
+                else:
+                    view = snapshot(value)
+                yield f"id: {wid}:{cursor}\nevent: snapshot\ndata: {canonical(view)}\n\n"
                 yield f"event: cursor\ndata: {cursor}\n\n"
-                await asyncio.sleep(0.25)
+                yield ": heartbeat\n\n"
+                await asyncio.sleep(0 if page["has_more"] else 1)
 
-        return StreamingResponse(generate(), media_type="text/event-stream")
+        return StreamingResponse(
+            generate(), media_type="text/event-stream", headers={"X-Accel-Buffering": "no"}
+        )
 
     @app.get("/api/worlds/{wid}/replay")
     async def replay(wid: str, at_seq: int):
@@ -464,76 +840,98 @@ def create_app(settings: Settings | None = None, *, store: Store | None = None) 
             },
         )
 
-    @app.post("/api/worlds/{wid}/export")
-    async def export(wid: str, body: Export):
-        state = get_state(wid)
-        archive = io.BytesIO()
-        all_events = []
-        cursor = 0
-        while True:
-            page = app.state.store.events(wid, cursor, 1000)
-            all_events.extend(page["events"])
-            if not page["has_more"]:
-                break
-            cursor = page["next_cursor"]
-        with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
-            z.writestr(
-                "manifest.json",
-                canonical(
-                    {
-                        "schema_version": "2.1",
-                        "rule_profile": "demo-v2.1",
-                        "world_id": wid,
-                        "mode": state["mode"],
-                        "view": body.view,
-                        "seq": state["seq"],
-                        "scenario_hash": state["scenario_hash"],
-                        "rule_manifest_hash": state.get("rule_manifest_hash"),
-                        "model_config_hash": state.get("model_config_hash"),
-                        "prompt_hash": state.get("prompt_hash"),
-                        "actor_order": state["actor_order"],
-                    }
-                ),
-            )
-            z.writestr(
-                "world.json", canonical(state if body.view == "research" else observer(state))
-            )
-            scenario = copy.deepcopy(state["scenario"])
-            if body.view != "research":
-                for piece in scenario["pieces"]:
-                    piece.pop("private_text", None)
-            z.writestr("scenario.json", canonical(scenario))
-            views = (
-                all_events
-                if body.view == "research"
-                else [v for e in all_events if (v := public_event(e)) is not None]
-            )
-            z.writestr("events.jsonl", "\n".join(canonical(e) for e in views) + "\n")
-            z.writestr("stories.json", canonical(state["stories"]))
-            snapshots = app.state.store.db.execute(
-                "SELECT seq,state FROM events WHERE world_id=? ORDER BY seq", (wid,)
-            ).fetchall()
-            checkpoints = [{"seq": 0, "state": app.state.store.replay(wid, 0)}]
-            checkpoints.extend(
-                {"seq": row["seq"], "state": __import__("json").loads(row["state"])}
-                for row in snapshots
-            )
-            if body.view != "research":
-                checkpoints = [
-                    {"seq": point["seq"], "state": observer(point["state"])}
-                    for point in checkpoints
-                ]
-            z.writestr("checkpoints.json", canonical(checkpoints))
-            if body.view == "research":
-                rows = app.state.store.db.execute(
-                    "SELECT slot,attempt,status,context,result,error_code FROM operations WHERE world_id=?",
-                    (wid,),
-                ).fetchall()
-                z.writestr("private/operations.json", canonical([dict(r) for r in rows]))
-        return Response(
-            archive.getvalue(),
+    def file_stream(path, filename):
+        def chunks():
+            with path.open("rb") as source:
+                while chunk := source.read(64 * 1024):
+                    yield chunk
+
+        return StreamingResponse(
+            chunks(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{wid}-{body.view}.zip"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(path.stat().st_size),
+            },
+            background=BackgroundTask(path.unlink, missing_ok=True),
         )
+
+    @app.post("/api/worlds/{wid}/export")
+    async def export(wid: str, body: Export, download: Literal["prepare"] | None = None):
+        get_state(wid)
+        directory = settings.data_dir / "exports"
+        directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        for token, (old_path, _filename, expiry) in list(downloads.items()):
+            if expiry < time.monotonic():
+                old_path.unlink(missing_ok=True)
+                del downloads[token]
+        # A consistent read-only SQLite copy decouples streaming from live
+        # runner commits. Never load all events/checkpoints into a Python list.
+        fd, temporary = tempfile.mkstemp(prefix="archive_", suffix=".zip", dir=directory)
+        os.close(fd)
+        path = Path(temporary)
+        cancelled = threading.Event()
+
+        def work():
+            snapshot_path = None
+            try:
+                backup = app.state.store.backup(directory)
+                snapshot_path = directory / backup["filename"]
+                if not cancelled.is_set():
+                    build_archive(
+                        snapshot_path,
+                        path,
+                        wid,
+                        body.view,
+                        secret=settings.api_key.get_secret_value(),
+                    )
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            finally:
+                if snapshot_path is not None:
+                    snapshot_path.unlink(missing_ok=True)
+                if cancelled.is_set():
+                    path.unlink(missing_ok=True)
+
+        task = asyncio.create_task(asyncio.to_thread(work))
+        try:
+            await asyncio.shield(task)
+            # A concurrent deletion cannot leave a downloadable orphan archive.
+            get_state(wid)
+        except asyncio.CancelledError:
+            cancelled.set()
+            path.unlink(missing_ok=True)
+            task.add_done_callback(
+                lambda completed: None if completed.cancelled() else completed.exception()
+            )
+            raise
+        except KeyError:
+            path.unlink(missing_ok=True)
+            raise HTTPException(404, "WORLD_NOT_FOUND") from None
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        filename = f"{wid}-{body.view}.zip"
+        if download == "prepare":
+            token = uuid4().hex
+            downloads[token] = (path, filename, time.monotonic() + 3600)
+            return {
+                "download_url": f"/api/exports/{token}",
+                "filename": filename,
+                "size_bytes": path.stat().st_size,
+            }
+        return file_stream(path, filename)
+
+    @app.get("/api/exports/{token}")
+    async def download_export(token: str):
+        prepared = downloads.pop(token, None)
+        if prepared is None:
+            raise HTTPException(404, "EXPORT_NOT_FOUND")
+        path, filename, expiry = prepared
+        if expiry < time.monotonic():
+            path.unlink(missing_ok=True)
+            raise HTTPException(404, "EXPORT_EXPIRED")
+        return file_stream(path, filename)
 
     return app

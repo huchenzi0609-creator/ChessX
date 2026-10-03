@@ -15,6 +15,11 @@ import type {
   CharacterInfo,
   ScenarioDocument,
   PresetScenario,
+  RunBudget,
+  BackupMetadata,
+  UpgradePreview,
+  ReceiptPage,
+  MessagePage,
 } from './types';
 export class ApiError extends Error {
   constructor(
@@ -97,16 +102,66 @@ export const api = {
   world: (worldId: string) => request<World>(`/worlds/${id(worldId)}?view=observer`),
   perspective: (worldId: string, pieceId: string) =>
     request<Perspective>(`/worlds/${id(worldId)}/perspectives/${id(pieceId)}`),
+  receipts: (worldId: string, pieceId: string, afterReceipt: number) =>
+    request<{
+      world_id: string;
+      piece_id: string;
+      seq: number;
+      receipts: RecordData[];
+      receipt_page: ReceiptPage;
+    }>(
+      `/worlds/${id(worldId)}/perspectives/${id(pieceId)}/receipts?after_receipt=${afterReceipt}&limit=200`,
+    ),
+  conversationMessages: (worldId: string, conversationId: string, beforeIndex: number) =>
+    request<{
+      conversation_id: string;
+      seq: number;
+      messages: RecordData[];
+      message_page: MessagePage;
+    }>(
+      `/worlds/${id(worldId)}/conversations/${id(conversationId)}/messages?before_index=${beforeIndex}&limit=50`,
+    ),
   inspection: (worldId: string, pieceId: string) =>
     request<RecordData>(`/worlds/${id(worldId)}/inspection/${id(pieceId)}`),
+  operations: (
+    worldId: string,
+    filters: { actor_id?: string; stage?: string; before_id?: number },
+  ) => {
+    const query = new URLSearchParams({
+      limit: '25',
+      ...(filters.actor_id ? { actor_id: filters.actor_id } : {}),
+      ...(filters.stage ? { stage: filters.stage } : {}),
+    });
+    if (filters.before_id !== undefined) query.set('before_id', String(filters.before_id));
+    return request<{ operations: RecordData[]; next_cursor: number | null; has_more: boolean }>(
+      `/worlds/${id(worldId)}/inspection?${query}`,
+    );
+  },
+  deleteWorld: (worldId: string) =>
+    request<{ deleted: boolean; world_id: string }>(`/worlds/${id(worldId)}`, { method: 'DELETE' }),
+  backup: () => request<BackupMetadata>('/backups', post({})),
+  upgradePreview: (worldId: string) =>
+    request<UpgradePreview>(`/worlds/${id(worldId)}/upgrade-policy`),
+  upgrade: (worldId: string, expectedSeq: number) =>
+    request<{ world: World; backup: BackupMetadata }>(
+      `/worlds/${id(worldId)}/upgrade-policy`,
+      post({ expected_seq: expectedSeq }),
+    ),
+  compactJournal: (worldId: string) =>
+    request<RecordData>(`/worlds/${id(worldId)}/compact-journal`, post({})),
   events: (worldId: string, afterSeq: number) =>
     request<{ events: EventRecord[]; next_cursor: number; has_more: boolean }>(
       `/worlds/${id(worldId)}/events?after_seq=${afterSeq}&limit=200`,
     ),
-  command: (worldId: string, kind: CommandKind, turns?: number) =>
+  command: (worldId: string, kind: CommandKind, turns?: number, budget?: RunBudget) =>
     request<RecordData>(
       `/worlds/${id(worldId)}/commands`,
-      post({ command_id: crypto.randomUUID(), kind, ...(turns !== undefined ? { turns } : {}) }),
+      post({
+        command_id: crypto.randomUUID(),
+        kind,
+        ...(turns !== undefined ? { turns } : {}),
+        ...(budget ? { budget } : {}),
+      }),
     ),
   commandStatus: (worldId: string, commandId: string) =>
     request<RecordData>(`/worlds/${id(worldId)}/commands/${id(commandId)}`),
@@ -117,16 +172,17 @@ export const api = {
   generateStory: (worldId: string, segmentId: string) =>
     request<RecordData>(`/worlds/${id(worldId)}/segments/${id(segmentId)}/story`, post({})),
   async export(worldId: string, view: 'observer' | 'research') {
-    const response = await fetch(`/api/worlds/${id(worldId)}/export`, {
-      ...post({ view }),
-      headers: { 'Content-Type': 'application/json' },
-    });
-    if (!response.ok) throw new ApiError(response.status, `导出失败（HTTP ${response.status}）`);
-    const url = URL.createObjectURL(await response.blob());
+    const archive = await request<{ download_url: string; filename: string }>(
+      `/worlds/${id(worldId)}/export?download=prepare`,
+      post({ view }),
+    );
+    if (!/^\/api\/exports\/[A-Za-z0-9_-]+$/.test(archive.download_url))
+      throw new ApiError(500, '导出下载地址无效');
     const anchor = document.createElement('a');
-    anchor.href = url;
-    anchor.download = `chessx-${worldId}-${view}.zip`;
+    anchor.href = archive.download_url;
+    anchor.download = archive.filename;
+    document.body.appendChild(anchor);
     anchor.click();
-    setTimeout(() => URL.revokeObjectURL(url), 1000);
+    anchor.remove();
   },
 };

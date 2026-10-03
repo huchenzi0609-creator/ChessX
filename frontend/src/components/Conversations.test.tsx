@@ -1,7 +1,9 @@
-import { render, screen, within } from '@testing-library/react';
-import { describe, expect, it } from 'vitest';
+import { fireEvent, render, screen, within } from '@testing-library/react';
+import { describe, expect, it, vi } from 'vitest';
 import Conversations from './Conversations';
 import type { EventRecord } from '../lib/types';
+import { api } from '../lib/api';
+vi.mock('../lib/api', () => ({ api: { conversationMessages: vi.fn() } }));
 const names = { a: '王后', b: '信使', c: '牧人' };
 describe('conversation continuity and ordering', () => {
   it('pins active conversations and sorts archives by recent activation, retaining silent participants', () => {
@@ -106,5 +108,55 @@ describe('conversation continuity and ordering', () => {
       'second',
     );
     expect(conversations.map((conversation) => conversation.id)).toEqual(['first', 'second']);
+  });
+  it('loads older message pages and keeps an already shown line when the live tail advances', async () => {
+    const messages = (start: number, count: number) =>
+      Array.from({ length: count }, (_, offset) => ({
+        id: `m${start + offset}`,
+        speaker_id: 'a',
+        speech: `line-${start + offset}`,
+      }));
+    const dialog = {
+      id: 'c',
+      status: 'active',
+      members: ['a'],
+      messages: messages(50, 50),
+      message_page: { total: 100, start_index: 50, has_earlier: true },
+    };
+    vi.mocked(api.conversationMessages).mockResolvedValue({
+      conversation_id: 'c',
+      seq: 100,
+      messages: messages(0, 50),
+      message_page: {
+        total: 100,
+        start_index: 0,
+        end_index: 50,
+        next_before_cursor: null,
+        has_earlier: false,
+      },
+    });
+    const { rerender } = render(
+      <Conversations worldId="w" currentTurn={10} names={names} conversations={[dialog]} />,
+    );
+    fireEvent.click(screen.getByText('显示本会话更早的 30 句'));
+    fireEvent.click(screen.getByText('读取本会话更早的 50 句'));
+    await screen.findByText('line-0');
+    expect(api.conversationMessages).toHaveBeenCalledWith('w', 'c', 50);
+    rerender(
+      <Conversations
+        worldId="w"
+        currentTurn={11}
+        names={names}
+        conversations={[
+          {
+            ...dialog,
+            messages: messages(51, 50),
+            message_page: { total: 101, start_index: 51, has_earlier: true },
+          },
+        ]}
+      />,
+    );
+    expect(screen.getByText('line-50')).toBeInTheDocument();
+    expect(screen.getByText('line-100')).toBeInTheDocument();
   });
 });

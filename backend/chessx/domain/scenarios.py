@@ -87,14 +87,24 @@ def load_scenario(
 
 
 def create_world(scenario: Scenario, personas: dict[str, str], world_id: str) -> dict:
+    from chessx.runtime.versioning import (
+        SAVE_SCHEMA_VERSION,
+        execution_policy_hash,
+        frozen_execution_policy,
+    )
+
     discipline, discipline_hash = frozen_discipline()
+    policy = frozen_execution_policy()
     return {
+        "save_schema_version": SAVE_SCHEMA_VERSION,
+        "execution_policy": policy,
+        "execution_policy_hash": execution_policy_hash(policy),
         "world_id": world_id,
         "scenario_id": scenario.scenario_id,
         "title": scenario.title,
-        "rule_version": "2.1",
-        "rule_profile": "demo-v2.1",
-        "rule_manifest": frozen_rule_manifest(),
+        "rule_version": "2.2",
+        "rule_profile": "demo-v2.2",
+        "rule_manifest": frozen_rule_manifest("demo-v2.2"),
         "rule_manifest_hash": RULE_MANIFEST_HASH,
         "discipline": discipline,
         "discipline_hash": discipline_hash,

@@ -21,6 +21,14 @@ from chessx.rules.geometry import (
     negotiation_mode,
     trace_path,
 )
+from chessx.runtime.conversations import (
+    advance_permission,
+    exhausted,
+    finish_protocol,
+    protocol_state,
+    record_message,
+    update_members,
+)
 
 
 def negotiation_schema(allowed: list[str]) -> dict:
@@ -149,8 +157,8 @@ class MovementMixin:
             "created_turn": state["turn"],
             "last_active_turn": state["turn"],
             "participant_ids": list(members),
-            "max_messages": state["limits"]["conversation_max_messages"],
         }
+        update_members(state, conversation, members)
         state["conversations"][cid] = conversation
         work.update(conversation_id=cid, stage="permission")
         return [
@@ -195,6 +203,7 @@ class MovementMixin:
                 raise RuleError(code, "The proposed result is not authorized for this contact")
 
         protocol = {
+            **protocol_state(state, conv),
             "conversation_id": cid,
             "kind": "negotiation",
             "members": contact(state, members),
@@ -219,26 +228,15 @@ class MovementMixin:
         # A failed or obsolete model operation never reaches these mutations.
         validate(reply)
         drafts = []
-        conv["permission_index"] += 1
         if reply["kind"] == "say":
-            message_id = f"{cid}:{index}"
-            message = {
-                "id": message_id,
-                "message_id": message_id,
-                "speaker_id": pid,
-                "speech": reply["speech"],
-            }
-            conv["messages"].append(message)
-            conv["counted_message_ids"].append(message_id)
-            conv["message_count"] += 1
-            conv["cycle_has_speech"] = True
+            message = record_message(state, conv, pid, reply["speech"])
             drafts.append(
                 event(
                     "NegotiationMessage",
                     pid,
                     {
                         "conversation_id": cid,
-                        "message_id": message_id,
+                        **message,
                         "speaker_id": pid,
                         "speaker_name": state["pieces"][pid].get("name", pid),
                         "speech": reply["speech"],
@@ -267,17 +265,11 @@ class MovementMixin:
         agreed = (
             latest[0] if latest and latest[0] != "undecided" and len(set(latest)) == 1 else None
         )
-        if conv["permission_index"] % len(members) == 0:
-            conv["idle_cycles"] = 0 if conv["cycle_has_speech"] else conv["idle_cycles"] + 1
-            conv["cycle_has_speech"] = False
+        advance_permission(conv, len(members), reply["kind"] == "say")
         # The final permitted message can establish a result; test it first.
         if agreed is not None:
             work["result"] = agreed
-        elif (
-            reply["kind"] == "leave"
-            or conv["message_count"] >= conv["max_messages"]
-            or conv["idle_cycles"] >= 2
-        ):
+        elif reply["kind"] == "leave" or exhausted(state, conv, conv):
             group = work["groups"][work["group_index"]]
             work["result"] = (
                 ("return_mover" if group["endpoint"] else "stop")
@@ -286,9 +278,7 @@ class MovementMixin:
             )
         else:
             return drafts
-        conv["status"] = "closed"
-        conv["last_active_turn"] = state["turn"]
-        conv["closed_turn"] = state["turn"]
+        finish_protocol(state, conv)
         work["stage"] = "result"
         drafts.append(
             event(

@@ -45,6 +45,45 @@ export type World = RecordData & {
   segments?: RecordData[] | Record<string, RecordData>;
   usage?: RecordData;
   errors?: unknown[];
+  runtime?: RuntimeStatus;
+};
+export type RunBudget = {
+  max_calls: number;
+  max_total_tokens: number;
+  max_wall_seconds: number;
+};
+export type RuntimeStatus = {
+  budget?: {
+    limits?: Partial<RunBudget>;
+    used?: RecordData;
+    remaining?: RecordData;
+    cost?: { known: boolean; amount: number | null; currency: string | null };
+    usage_completeness?: string;
+    unknown_usage_requests?: number;
+  };
+  pending_requests?: RecordData[];
+  waiting_reason?: string | RecordData | null;
+  active_actor_id?: string | null;
+  active_stage?: string | null;
+  execution_policy?: string | RecordData;
+  save_schema_version?: string;
+};
+export type BackupMetadata = {
+  backup_id: string;
+  filename: string;
+  created_at: string;
+  size_bytes: number;
+  scope: string;
+  schema_version: string;
+};
+export type UpgradePreview = {
+  current_policy: string | RecordData;
+  target_policy: string | RecordData;
+  can_upgrade: boolean;
+  blockers: { code: string; message: string }[];
+  changes: string[];
+  backup_required: boolean;
+  expected_seq: number;
 };
 export type Perspective = {
   world_id: string;
@@ -60,13 +99,30 @@ export type Perspective = {
     visible_cells?: (Position | [number, number])[];
   };
   receipts: RecordData[];
+  receipt_page?: ReceiptPage;
   private?: {
     persona?: unknown;
     memory?: unknown;
     goals?: unknown;
     memory_version?: number;
     goal_version?: number;
+    travel_plan?: RecordData;
   };
+};
+export type ReceiptPage = {
+  total: number;
+  start_index: number;
+  end_index: number;
+  next_cursor: number | null;
+  has_more: boolean;
+  has_earlier: boolean;
+};
+export type MessagePage = {
+  total: number;
+  start_index: number;
+  end_index: number;
+  next_before_cursor: number | null;
+  has_earlier: boolean;
 };
 export type Health = {
   status: string;

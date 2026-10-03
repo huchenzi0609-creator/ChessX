@@ -311,7 +311,9 @@ def spatial_recall(
     }
 
 
-def movement_options(observation: dict, targets: list[list[int]]) -> list[dict]:
+def movement_options(
+    observation: dict, targets: list[list[int]], *, rules_state: dict | None = None
+) -> list[dict]:
     """Summarize representative routes using current visible blockers only.
 
     This is deliberately advisory. Unknown cells remain unknown, and neither a
@@ -361,7 +363,9 @@ def movement_options(observation: dict, targets: list[list[int]]) -> list[dict]:
                 "distance_steps": max(
                     abs(row - own["position"]["row"]), abs(col - own["position"]["col"])
                 ),
-                "rest_turns_if_success": movement_rest(own, own["position"], destination),
+                "rest_turns_if_success": movement_rest(
+                    own, own["position"], destination, rules_state
+                ),
                 "destination_knowledge": knowledge,
                 "known_contacts": contacts,
                 "unknown_path_count": sum((pos["row"], pos["col"]) not in visible for pos in path),
@@ -371,7 +375,11 @@ def movement_options(observation: dict, targets: list[list[int]]) -> list[dict]:
 
 
 def approach_options(
-    observation: dict, targets: list[list[int]], known_locations: list[dict]
+    observation: dict,
+    targets: list[list[int]],
+    known_locations: list[dict],
+    *,
+    rules_state: dict | None = None,
 ) -> list[dict]:
     """Link personally known places to optional legal next moves, without goals.
 
@@ -381,7 +389,10 @@ def approach_options(
     own = observation["self"]
     # Route knowledge is independent of the person being approached. Cache the
     # bounded summaries once instead of tracing the same candidates per person.
-    routes = {tuple(target): movement_options(observation, [target])[0] for target in targets}
+    routes = {
+        tuple(target): movement_options(observation, [target], rules_state=rules_state)[0]
+        for target in targets
+    }
     approaches = []
     for entry in known_locations[:8]:
         reference = entry["position"]

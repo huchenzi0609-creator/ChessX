@@ -13,6 +13,76 @@
   --paper: #fcfbf6;
   --navy: #263f50;
 }
+
+.budget-settings,
+.runtime-panel,
+.archive-tools {
+  margin: 12px 0;
+  padding: 14px 18px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: var(--paper);
+}
+.budget-editor {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  border: 0;
+  padding: 12px 0 0;
+}
+.budget-editor label,
+.delete-confirmation label,
+.operations label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13px;
+}
+.budget-editor p {
+  grid-column: 1 / -1;
+}
+.runtime-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 12px;
+}
+.runtime-metrics div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.runtime-metrics span,
+.runtime-metrics small {
+  font-size: 12px;
+  color: var(--muted);
+}
+.pending-requests {
+  padding-left: 20px;
+  font-size: 13px;
+}
+.danger {
+  color: #9d3434;
+}
+.delete-confirmation,
+.upgrade-preview {
+  margin-top: 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+}
+.delete-confirmation input {
+  max-width: 400px;
+  margin-bottom: 12px;
+}
+.operations label {
+  margin: 10px 0;
+}
+@media (max-width: 700px) {
+  .budget-editor,
+  .runtime-metrics {
+    grid-template-columns: 1fr;
+  }
+}
 .preset-main {
   min-width: 0;
   padding: 0 24px 24px;

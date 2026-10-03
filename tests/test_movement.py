@@ -207,13 +207,13 @@ async def test_final_fiftieth_message_checks_valid_agreement_before_limit():
 
 
 @pytest.mark.asyncio
-async def test_fiftieth_without_agreement_fights_no_fifty_first_call():
+async def test_two_person_hundredth_without_agreement_fights_no_extra_call():
     state = world()
     start(state, pos(3, 5))
-    runner = Harness([{"kind": "say", "speech": "尚未决定。"}] * 50)
+    runner = Harness([{"kind": "say", "speech": "尚未决定。"}] * 100)
     state, _ = await runner.run(state)
-    assert len(runner.calls) == 50
-    assert next(iter(state["conversations"].values()))["message_count"] == 50
+    assert len(runner.calls) == 100
+    assert next(iter(state["conversations"].values()))["message_count"] == 100
     assert len(state["battles"]) == 1
 
 

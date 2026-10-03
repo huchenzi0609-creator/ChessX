@@ -7,13 +7,14 @@ from copy import deepcopy
 import pytest
 from chessx.config import Settings
 from chessx.domain.models import Scenario
+from chessx.domain.profile import frozen_rule_manifest, profile_manifest_hash
 from chessx.domain.scenarios import create_world
 from chessx.llm import FixtureAdapter, ModelError, ModelResult
 from chessx.runtime.runner import WorldRunner
 from chessx.storage import Store
 
 
-def setup(tmp_path, *, calls=100, tokens=100000, parallelism=2):
+def setup(tmp_path, *, calls=100, tokens=100000, parallelism=2, legacy=True):
     scenario = Scenario.model_validate(
         {
             "scenario_id": "race",
@@ -32,6 +33,14 @@ def setup(tmp_path, *, calls=100, tokens=100000, parallelism=2):
         }
     )
     state = create_world(scenario, {p: f"OWNER_ONLY_{p}" for p in "abc"}, "race")
+    # These regression cases freeze the original one-per-turn race protocol.
+    if legacy:
+        state.update(
+            rule_version="2.1",
+            rule_profile="demo-v2.1",
+            rule_manifest=frozen_rule_manifest("demo-v2.1"),
+            rule_manifest_hash=profile_manifest_hash("demo-v2.1"),
+        )
     state.update(
         mode="fixture",
         lifecycle="RUNNING",
@@ -70,6 +79,13 @@ def setup(tmp_path, *, calls=100, tokens=100000, parallelism=2):
             "member_index": 1,
         },
     }
+    if not legacy:
+        state["dialogue_permissions"] = {
+            "turn": 1,
+            "actors": {"a": {"speeches": 1, "permissions": 1}},
+        }
+        state["cursor"]["work"]["member_order"] = list("bca")
+        state["cursor"]["work"]["member_index"] = 0
     store = Store(tmp_path / "race.sqlite3")
     store.create(state)
     store.commit(
@@ -165,7 +181,7 @@ async def test_same_tick_completions_commit_only_winner_and_account_discarded_re
 
 
 async def test_pause_cancels_all_candidates_and_preserves_dialogue_and_cursor(tmp_path):
-    store, runner = setup(tmp_path)
+    store, runner = setup(tmp_path, legacy=False)
     all_started = asyncio.Event()
     started = set()
     cancelled = set()
@@ -258,8 +274,7 @@ async def test_fiftieth_message_closes_conversation_and_never_publishes_loser(tm
 
 
 async def test_joint_token_reservation_falls_back_to_one_request(tmp_path):
-    from chessx.contexts import build_context
-    from chessx.contexts.budgets import fit_context, request_input_tokens
+    from chessx.contexts.budgets import request_input_tokens
     from chessx.runtime.dialogue import ORDINARY_SCHEMA
 
     store, runner = setup(tmp_path)
@@ -267,14 +282,7 @@ async def test_joint_token_reservation_falls_back_to_one_request(tmp_path):
     runner.adapters["race"] = adapter
     current = store.get("race")
     protocol = {"conversation_id": "c", "conversation_version": 1}
-    context = fit_context(
-        "ordinary",
-        build_context(current, "b", "ordinary", protocol),
-        ORDINARY_SCHEMA,
-        adapter.counter,
-        max_output_tokens=512,
-        input_limit=8192,
-    )
+    context = runner.ordinary_candidate_context(current, "c", "b", ORDINARY_SCHEMA, protocol)
     single = request_input_tokens("ordinary", context, ORDINARY_SCHEMA, adapter.counter, 512) + 1512
     current["budget"]["max_total_tokens"] = single + 5
     pid, answer = await runner.ask_ordinary_race(
@@ -283,4 +291,46 @@ async def test_joint_token_reservation_falls_back_to_one_request(tmp_path):
     assert pid == "b" and answer["kind"] in {"say", "pass"}
     assert store.call_count("race") == 1
     await runner.close()
+    store.close()
+
+
+async def test_latest_ten_speech_schedule_cancels_and_rethinks_each_new_version(tmp_path):
+    store, runner = setup(tmp_path, legacy=False)
+    peer_entered, peer_cancelled = asyncio.Event(), asyncio.Event()
+    seen = []
+
+    class Adapter(FixtureAdapter):
+        async def generate(self, stage, context, schema, *, max_output_tokens=512):
+            pid = context["actor_id"]
+            seen.append((pid, deepcopy(context["protocol"])))
+            if pid == "b":
+                await peer_entered.wait()
+                return result("B_LATEST")
+            if pid == "c" and sum(owner == "c" for owner, _ in seen) == 1:
+                peer_entered.set()
+                try:
+                    await asyncio.Event().wait()
+                except asyncio.CancelledError:
+                    peer_cancelled.set()
+                    raise
+            if pid == "c":
+                assert context["protocol"]["latest_message"]["speech"] == "B_LATEST"
+                return result("C_RECONSIDERED")
+            await asyncio.Event().wait()
+
+    runner.adapters["race"] = Adapter()
+    await asyncio.wait_for(runner.step("race"), 2)
+    assert peer_cancelled.is_set()
+    await asyncio.wait_for(runner.step("race"), 2)
+    state = store.get("race")
+    messages = state["conversations"]["c"]["messages"]
+    assert [message["speech"] for message in messages] == [
+        "INITIAL_A",
+        "B_LATEST",
+        "C_RECONSIDERED",
+    ]
+    assert messages[-1]["based_on_message_id"] == messages[-2]["message_id"]
+    usage = state["dialogue_permissions"]["actors"]
+    assert usage["a"]["speeches"] == usage["b"]["speeches"] == usage["c"]["speeches"] == 1
+    assert seen[0][1]["remaining_speeches_this_world_turn"] == 10
     store.close()

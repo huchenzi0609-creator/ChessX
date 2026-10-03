@@ -52,7 +52,7 @@ def test_five_turn_segment_resume_replay_and_private_archive(tmp_path):
         assert replay["pieces"] == first["pieces"]
         assert replay["completed_turn"] == 5
         raw = client.app.state.store.get(wid)
-        assert raw["rule_manifest"]["spec_version"] == "2.1"
+        assert raw["rule_manifest"]["spec_version"] == "2.2"
         for pid in raw["pieces"]:
             assert raw["private"][pid]["goals"]
             assert raw["private"][pid]["persona"] == raw["private"][pid]["initial_memory"]

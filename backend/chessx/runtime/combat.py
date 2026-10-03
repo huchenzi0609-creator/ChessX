@@ -13,6 +13,14 @@ from chessx.rules.actions import (
     validate_battle_partition,
 )
 from chessx.runtime import schemas
+from chessx.runtime.conversations import (
+    advance_permission,
+    exhausted,
+    finish_protocol,
+    protocol_state,
+    record_message,
+    update_members,
+)
 
 
 def draft(kind, actor=None, payload=None, audience=None):
@@ -174,6 +182,9 @@ class CombatMixin:
                 "counted_message_ids": [],
                 "messages": [],
             }
+            update_members(
+                state, state["conversations"][cid], state["conversations"][cid]["members"]
+            )
             work.update(
                 stage="settlement_speak",
                 conversation_id=cid,
@@ -199,7 +210,7 @@ class CombatMixin:
         raise RuleError("CURSOR_INVALID", "The combat cursor is invalid")
 
     def finish_loser(self, state, battle, work):
-        state["conversations"][work["conversation_id"]]["status"] = "closed"
+        finish_protocol(state, state["conversations"][work["conversation_id"]])
         work.update(stage="settlement_init", loser_index=work["loser_index"] + 1)
 
     async def settlement_step(self, state, battle, work):
@@ -313,10 +324,7 @@ class CombatMixin:
             ]
         if work["stage"] != "settlement_speak":
             raise RuleError("CURSOR_INVALID", "The settlement cursor is invalid")
-        if (
-            conv["message_count"] >= state["limits"]["conversation_max_messages"]
-            or work["idle_cycles"] >= 2
-        ):
+        if exhausted(state, conv, work):
             work["stage"] = "settlement_terminal"
             return [
                 draft(
@@ -350,27 +358,20 @@ class CombatMixin:
             f"battle:{bid}:loser:{loser}:permit:{work['permit_index']}",
             schemas.SETTLEMENT,
             {
+                **protocol_state(state, conv),
                 "battle_id": bid,
                 "loser_id": loser,
                 "winners": winners,
                 "member_ids": audience,
                 "message_count": conv["message_count"],
-                "remaining_messages": 50 - conv["message_count"],
                 "instruction": "Negotiate freely. Only winners can propose release or execute. Accepted conditions affect only your own lawful object/color actions.",
             },
             validator=validate,
         )
-        work["permit_index"] += 1
         events = []
         speech = result.get("speech", "").strip()
         if speech:
-            mid = f"{conv['id']}:{work['permit_index']}"
-            conv["messages"].append(
-                {"id": mid, "speaker_id": pid, "speech": speech, "turn": state["turn"]}
-            )
-            conv["counted_message_ids"].append(mid)
-            conv["message_count"] += 1
-            work["cycle_speech"] = True
+            message = record_message(state, conv, pid, speech)
             events.append(
                 draft(
                     "SettlementMessage",
@@ -380,14 +381,14 @@ class CombatMixin:
                         "speaker_id": pid,
                         "speech": speech,
                         "speaker_name": state["pieces"][pid].get("name", pid),
-                        "message_id": mid,
+                        **message,
                     },
                     audience,
                 )
             )
-        if work["permit_index"] % len(audience) == 0:
-            work["idle_cycles"] = 0 if work["cycle_speech"] else work["idle_cycles"] + 1
-            work["cycle_speech"] = False
+        advance_permission(
+            work, len(audience), bool(speech), index_key="permit_index", speech_key="cycle_speech"
+        )
         kind = result["kind"]
         if kind == "execute_loser":
             events.extend(kill_loser(state, bid, pid, loser))

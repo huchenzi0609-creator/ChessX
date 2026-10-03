@@ -117,7 +117,7 @@ export default function MatchEditor({ group, document, library, onSaved, onDirty
     return {
       ...scenario,
       schema_version: '2.1',
-      rule_profile: 'demo-v2.1',
+      rule_profile: 'demo-v2.2',
       objects: parsedObjects,
       limits: parsedLimits as Record<string, unknown>,
     };
